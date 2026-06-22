@@ -12,6 +12,8 @@
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod rbac;
+pub mod tenancy;
 
 pub use error::{AppError, Result};
 
@@ -52,5 +54,31 @@ mod tests {
             "Event JSON Schema drift detected — regenerate with scripts/gen-types.sh"
         );
         Ok(())
+    }
+
+    // Human: Guards that each Permission serializes to the same dotted key that
+    // as_str() returns, so the API payload form and DB catalog key never diverge.
+    // Agent: ASSERTS serde rename == as_str for all Permission::ALL.
+    #[test]
+    fn permission_serialization_matches_as_str() -> std::result::Result<(), serde_json::Error> {
+        for permission in rbac::Permission::ALL {
+            let json = serde_json::to_string(&permission)?;
+            assert_eq!(json, format!("\"{}\"", permission.as_str()));
+        }
+        Ok(())
+    }
+
+    // Human: Sanity-checks the preset hierarchy: Viewer ⊂ Analyst ⊂ Owner, and
+    // Owner holds the full catalog. Catches accidental preset drift.
+    // Agent: ASSERTS Owner==ALL; Viewer⊆Analyst⊆Owner permission sets.
+    #[test]
+    fn role_presets_are_nested_and_owner_is_full() {
+        let owner = rbac::RolePreset::Owner.permissions();
+        let analyst = rbac::RolePreset::Analyst.permissions();
+        let viewer = rbac::RolePreset::Viewer.permissions();
+
+        assert_eq!(owner.len(), rbac::Permission::ALL.len());
+        assert!(viewer.iter().all(|p| analyst.contains(p)));
+        assert!(analyst.iter().all(|p| owner.contains(p)));
     }
 }
