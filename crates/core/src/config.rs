@@ -23,6 +23,8 @@ pub struct Config {
     pub storage_url: String,
     /// JWT signing secret for Geos auth (min 32 chars).
     pub jwt_secret: String,
+    /// Socket address for the HTTP API (e.g. `0.0.0.0:8080`).
+    pub bind_addr: String,
 }
 
 impl Config {
@@ -38,6 +40,8 @@ impl Config {
             meili_master_key: require_secret("MEILI_MASTER_KEY")?,
             storage_url: require_var("STORAGE_URL")?,
             jwt_secret: require_secret("JWT_SECRET")?,
+            bind_addr: std::env::var("GEOS_BIND_ADDR")
+                .unwrap_or_else(|_| "0.0.0.0:8080".to_owned()),
         })
     }
 }

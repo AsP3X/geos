@@ -1,8 +1,45 @@
-//! Idempotent upsert of canonical [`Event`] rows into the partitioned `events` table.
+//! Idempotent upsert and tenant-scoped reads of canonical [`Event`] rows.
 
-use crate::events::{Category, Event, EventStatus, Severity, VerificationStatus};
-use crate::Result;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::events::{Category, Event, EventStatus, GeoPoint, Severity, VerificationStatus};
+use crate::Result;
+
+/// Geographic bounding box filter (WGS84 degrees).
+#[derive(Debug, Clone, Copy)]
+pub struct EventBBox {
+    /// Western longitude.
+    pub min_lon: f64,
+    /// Southern latitude.
+    pub min_lat: f64,
+    /// Eastern longitude.
+    pub max_lon: f64,
+    /// Northern latitude.
+    pub max_lat: f64,
+}
+
+/// Tenant-scoped list filters. `tenant_id` is always enforced.
+#[derive(Debug, Clone)]
+pub struct EventListFilter {
+    /// Authenticated tenant — required on every query.
+    pub tenant_id: Uuid,
+    /// Optional viewport bounding box.
+    pub bbox: Option<EventBBox>,
+    /// Optional category filter.
+    pub category: Option<Category>,
+    /// Optional severity filter.
+    pub severity: Option<Severity>,
+    /// Include events at or after this time.
+    pub occurred_after: Option<DateTime<Utc>>,
+    /// Include events at or before this time.
+    pub occurred_before: Option<DateTime<Utc>>,
+    /// Page size (clamped by caller).
+    pub limit: i64,
+    /// Pagination offset.
+    pub offset: i64,
+}
 
 /// Insert or update an event keyed on `(tenant_id, source, source_event_id, occurred_at)`.
 pub async fn upsert_event(pool: &PgPool, event: &Event) -> Result<()> {
@@ -88,6 +125,219 @@ pub async fn upsert_event(pool: &PgPool, event: &Event) -> Result<()> {
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// List events for one tenant with optional filters.
+pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<Event>> {
+    let mut builder = sqlx::QueryBuilder::new(
+        r#"
+        SELECT
+            id, tenant_id, source, source_event_id,
+            category::text AS category, severity::text AS severity, impact_score,
+            magnitude, title, summary, body, original_text, translated_text, language,
+            ST_X(location::geometry) AS lon, ST_Y(location::geometry) AS lat,
+            country, region, place_name,
+            occurred_at, detected_at, ingested_at,
+            status::text AS status, verification_status::text AS verification_status,
+            confidence, tags, url, raw
+        FROM events
+        WHERE tenant_id = "#,
+    );
+    builder.push_bind(filter.tenant_id);
+
+    if let Some(bbox) = filter.bbox {
+        builder.push(" AND ST_Intersects(location::geometry, ST_MakeEnvelope(");
+        builder.push_bind(bbox.min_lon);
+        builder.push(", ");
+        builder.push_bind(bbox.min_lat);
+        builder.push(", ");
+        builder.push_bind(bbox.max_lon);
+        builder.push(", ");
+        builder.push_bind(bbox.max_lat);
+        builder.push(", 4326))");
+    }
+
+    if let Some(category) = filter.category {
+        builder.push(" AND category = ");
+        builder.push_bind(pg_category(category));
+        builder.push("::event_category");
+    }
+
+    if let Some(severity) = filter.severity {
+        builder.push(" AND severity = ");
+        builder.push_bind(pg_severity(severity));
+        builder.push("::event_severity");
+    }
+
+    if let Some(after) = filter.occurred_after {
+        builder.push(" AND occurred_at >= ");
+        builder.push_bind(after);
+    }
+
+    if let Some(before) = filter.occurred_before {
+        builder.push(" AND occurred_at <= ");
+        builder.push_bind(before);
+    }
+
+    builder.push(" ORDER BY occurred_at DESC LIMIT ");
+    builder.push_bind(filter.limit);
+    builder.push(" OFFSET ");
+    builder.push_bind(filter.offset);
+
+    let rows = builder.build_query_as::<EventRow>().fetch_all(pool).await?;
+    rows.into_iter()
+        .map(EventRow::into_event)
+        .collect::<Result<Vec<_>>>()
+}
+
+/// Fetch one event by id within a tenant, or `None` if missing / wrong tenant.
+pub async fn get_event(pool: &PgPool, tenant_id: Uuid, event_id: Uuid) -> Result<Option<Event>> {
+    let row = sqlx::query_as::<_, EventRow>(
+        r#"
+        SELECT
+            id, tenant_id, source, source_event_id,
+            category::text AS category, severity::text AS severity, impact_score,
+            magnitude, title, summary, body, original_text, translated_text, language,
+            ST_X(location::geometry) AS lon, ST_Y(location::geometry) AS lat,
+            country, region, place_name,
+            occurred_at, detected_at, ingested_at,
+            status::text AS status, verification_status::text AS verification_status,
+            confidence, tags, url, raw
+        FROM events
+        WHERE tenant_id = $1 AND id = $2
+        LIMIT 1
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(|r| r.into_event()).transpose()
+}
+
+#[derive(sqlx::FromRow)]
+struct EventRow {
+    id: Uuid,
+    tenant_id: Uuid,
+    source: String,
+    source_event_id: String,
+    category: String,
+    severity: String,
+    impact_score: i16,
+    magnitude: Option<f64>,
+    title: Option<String>,
+    summary: Option<String>,
+    body: Option<String>,
+    original_text: Option<String>,
+    translated_text: Option<String>,
+    language: Option<String>,
+    lon: f64,
+    lat: f64,
+    country: Option<String>,
+    region: Option<String>,
+    place_name: Option<String>,
+    occurred_at: DateTime<Utc>,
+    detected_at: Option<DateTime<Utc>>,
+    ingested_at: DateTime<Utc>,
+    status: String,
+    verification_status: String,
+    confidence: f32,
+    tags: Vec<String>,
+    url: Option<String>,
+    raw: serde_json::Value,
+}
+
+impl EventRow {
+    fn into_event(self) -> Result<Event> {
+        Ok(Event {
+            id: self.id,
+            tenant_id: self.tenant_id,
+            source: self.source,
+            source_event_id: self.source_event_id,
+            category: parse_category(&self.category)?,
+            severity: parse_severity(&self.severity)?,
+            impact_score: u8::try_from(self.impact_score)
+                .map_err(|_| crate::error::AppError::internal("invalid impact_score"))?,
+            magnitude: self.magnitude,
+            title: self.title,
+            summary: self.summary,
+            body: self.body,
+            original_text: self.original_text,
+            translated_text: self.translated_text,
+            language: self.language,
+            location: GeoPoint {
+                lon: self.lon,
+                lat: self.lat,
+            },
+            affected_area: None,
+            country: self.country,
+            region: self.region,
+            place_name: self.place_name,
+            occurred_at: self.occurred_at,
+            detected_at: self.detected_at,
+            ingested_at: self.ingested_at,
+            status: parse_status(&self.status)?,
+            verification_status: parse_verification(&self.verification_status)?,
+            confidence: self.confidence,
+            tags: self.tags,
+            url: self.url,
+            raw: self.raw,
+            embedding: None,
+        })
+    }
+}
+
+fn parse_category(value: &str) -> Result<Category> {
+    match value {
+        "earthquake" => Ok(Category::Earthquake),
+        "incident" => Ok(Category::Incident),
+        "alert" => Ok(Category::Alert),
+        "weather" => Ok(Category::Weather),
+        "news" => Ok(Category::News),
+        "conflict" => Ok(Category::Conflict),
+        "wildfire" => Ok(Category::Wildfire),
+        "other" => Ok(Category::Other),
+        _ => Err(crate::error::AppError::internal(format!(
+            "unknown category: {value}"
+        ))),
+    }
+}
+
+fn parse_severity(value: &str) -> Result<Severity> {
+    match value {
+        "info" => Ok(Severity::Info),
+        "low" => Ok(Severity::Low),
+        "moderate" => Ok(Severity::Moderate),
+        "high" => Ok(Severity::High),
+        "critical" => Ok(Severity::Critical),
+        _ => Err(crate::error::AppError::internal(format!(
+            "unknown severity: {value}"
+        ))),
+    }
+}
+
+fn parse_status(value: &str) -> Result<EventStatus> {
+    match value {
+        "active" => Ok(EventStatus::Active),
+        "resolved" => Ok(EventStatus::Resolved),
+        "archived" => Ok(EventStatus::Archived),
+        _ => Err(crate::error::AppError::internal(format!(
+            "unknown status: {value}"
+        ))),
+    }
+}
+
+fn parse_verification(value: &str) -> Result<VerificationStatus> {
+    match value {
+        "verified" => Ok(VerificationStatus::Verified),
+        "unverified" => Ok(VerificationStatus::Unverified),
+        "rumor" => Ok(VerificationStatus::Rumor),
+        "disputed" => Ok(VerificationStatus::Disputed),
+        _ => Err(crate::error::AppError::internal(format!(
+            "unknown verification_status: {value}"
+        ))),
+    }
 }
 
 fn pg_category(value: Category) -> &'static str {

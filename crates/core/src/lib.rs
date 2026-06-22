@@ -9,11 +9,13 @@
 //! `AiProvider` trait, the nebular-os storage client, impact scoring) are added
 //! by later steps in the implementation plan.
 
+pub mod audit;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod events;
 pub mod impact;
+pub mod password;
 pub mod rbac;
 pub mod tenancy;
 

@@ -61,6 +61,7 @@ services:
       MEILI_URL: http://meilisearch:7700
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum}
       STORAGE_URL: http://object-storage:9000
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (min 32 chars)}
       GEOS_BIND_ADDR: 0.0.0.0:8080
       RUST_LOG: ${RUST_LOG:-info}
     ports:
