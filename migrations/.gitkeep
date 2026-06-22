@@ -1,2 +1,0 @@
-# sqlx migrations (PostGIS + pgvector) live here. The first migration is added by
-# the core-schema work; see .cursor/rules/api-sqlx-migrations.mdc.

@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Event",
+  "description": "The canonical event record.\n\nThis is the serialization contract shared with the frontend and CLI. The\n`raw` field always retains the original source payload; source-specific data\nlives there rather than forking this type.",
+  "type": "object",
+  "properties": {
+    "affected_area": {
+      "description": "Optional affected area as a GeoJSON Polygon (SRID 4326)."
+    },
+    "body": {
+      "description": "Full body text in the user's language (translated if needed).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "category": {
+      "description": "High-level category.",
+      "$ref": "#/$defs/Category"
+    },
+    "confidence": {
+      "description": "Confidence in [0, 1] (distinct from source reliability).",
+      "type": "number",
+      "format": "float"
+    },
+    "country": {
+      "description": "ISO 3166-1 alpha-2 country code, when resolved.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "detected_at": {
+      "description": "When the source first detected it, if distinct from `occurred_at`.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "embedding": {
+      "description": "Semantic embedding (length [`EMBEDDING_DIM`]); absent until enriched.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "number",
+        "format": "float"
+      }
+    },
+    "id": {
+      "description": "Stable unique identifier.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "impact_score": {
+      "description": "Normalized 0–100 impact score (deterministic, versioned scoring).",
+      "type": "integer",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0
+    },
+    "ingested_at": {
+      "description": "When Geos ingested it.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "language": {
+      "description": "BCP-47 language tag of the original source text (e.g. `\"en\"`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "location": {
+      "description": "Primary point location (SRID 4326).",
+      "$ref": "#/$defs/GeoPoint"
+    },
+    "magnitude": {
+      "description": "Optional source magnitude (e.g. earthquake moment magnitude).",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "occurred_at": {
+      "description": "When the event actually occurred (partition key, monthly partitions).",
+      "type": "string",
+      "format": "date-time"
+    },
+    "original_text": {
+      "description": "Original-language source text, retained alongside any translation.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "place_name": {
+      "description": "Human-readable place name, when resolved.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "raw": {
+      "description": "Original source payload (jsonb), always retained."
+    },
+    "region": {
+      "description": "Administrative region / state, when resolved.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "severity": {
+      "description": "Coarse severity tier.",
+      "$ref": "#/$defs/Severity"
+    },
+    "source": {
+      "description": "Source system identifier (e.g. `\"usgs\"`, `\"manual\"`).",
+      "type": "string"
+    },
+    "source_event_id": {
+      "description": "Source-native event id; `(tenant_id, source, source_event_id)` is the\nidempotency key for upserts (`connector-contract.mdc`).",
+      "type": "string"
+    },
+    "status": {
+      "description": "Lifecycle status.",
+      "$ref": "#/$defs/EventStatus"
+    },
+    "summary": {
+      "description": "One- or two-sentence summary (may be AI-generated).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tags": {
+      "description": "Free-form tags for filtering.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tenant_id": {
+      "description": "Owning tenant (every row is tenant-scoped; `tenant-isolation.mdc`).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "title": {
+      "description": "Short human title.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "translated_text": {
+      "description": "Translated text, when the source was in another language.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "url": {
+      "description": "Canonical source URL, when available.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verification_status": {
+      "description": "Trust/verification state.",
+      "$ref": "#/$defs/VerificationStatus"
+    }
+  },
+  "required": [
+    "id",
+    "tenant_id",
+    "source",
+    "source_event_id",
+    "category",
+    "severity",
+    "impact_score",
+    "location",
+    "occurred_at",
+    "ingested_at",
+    "status",
+    "verification_status",
+    "confidence",
+    "tags",
+    "raw"
+  ],
+  "$defs": {
+    "Category": {
+      "description": "High-level classification of an event. Closed, versioned enum: adding a\nvalue requires updating the DB enum, migrations, and UI legend/filters.",
+      "oneOf": [
+        {
+          "description": "Seismic event (e.g. USGS earthquake).",
+          "type": "string",
+          "const": "earthquake"
+        },
+        {
+          "description": "Generic incident not covered by a more specific category.",
+          "type": "string",
+          "const": "incident"
+        },
+        {
+          "description": "Official alert or warning.",
+          "type": "string",
+          "const": "alert"
+        },
+        {
+          "description": "Weather-related event.",
+          "type": "string",
+          "const": "weather"
+        },
+        {
+          "description": "News-derived event.",
+          "type": "string",
+          "const": "news"
+        },
+        {
+          "description": "Armed conflict or violence.",
+          "type": "string",
+          "const": "conflict"
+        },
+        {
+          "description": "Wildfire / bushfire.",
+          "type": "string",
+          "const": "wildfire"
+        },
+        {
+          "description": "Anything not matching the above.",
+          "type": "string",
+          "const": "other"
+        }
+      ]
+    },
+    "EventStatus": {
+      "description": "Lifecycle status of an event.",
+      "oneOf": [
+        {
+          "description": "Currently active / ongoing.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "Resolved / concluded.",
+          "type": "string",
+          "const": "resolved"
+        },
+        {
+          "description": "Archived (retained but inactive).",
+          "type": "string",
+          "const": "archived"
+        }
+      ]
+    },
+    "GeoPoint": {
+      "description": "A geographic point in WGS84 (SRID 4326).\n\nStored in PostGIS as `geography(Point,4326)`. Field order is (lon, lat) to\nmatch PostGIS constructors (`geospatial-postgis.mdc`).",
+      "type": "object",
+      "properties": {
+        "lat": {
+          "description": "Latitude in decimal degrees, range [-90, 90].",
+          "type": "number",
+          "format": "double"
+        },
+        "lon": {
+          "description": "Longitude in decimal degrees, range [-180, 180].",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "lon",
+        "lat"
+      ]
+    },
+    "Severity": {
+      "description": "Coarse severity tier, complementing the numeric `impact_score`.",
+      "oneOf": [
+        {
+          "description": "Informational only.",
+          "type": "string",
+          "const": "info"
+        },
+        {
+          "description": "Low severity.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Moderate severity.",
+          "type": "string",
+          "const": "moderate"
+        },
+        {
+          "description": "High severity.",
+          "type": "string",
+          "const": "high"
+        },
+        {
+          "description": "Critical severity.",
+          "type": "string",
+          "const": "critical"
+        }
+      ]
+    },
+    "VerificationStatus": {
+      "description": "Trust/verification state, set by ingestion or the annotation workflow.",
+      "oneOf": [
+        {
+          "description": "Confirmed by a trusted source or analyst.",
+          "type": "string",
+          "const": "verified"
+        },
+        {
+          "description": "Not yet verified (default).",
+          "type": "string",
+          "const": "unverified"
+        },
+        {
+          "description": "Unconfirmed rumor.",
+          "type": "string",
+          "const": "rumor"
+        },
+        {
+          "description": "Conflicting information; disputed.",
+          "type": "string",
+          "const": "disputed"
+        }
+      ]
+    }
+  }
+}
