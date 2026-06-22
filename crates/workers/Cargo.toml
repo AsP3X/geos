@@ -1,0 +1,18 @@
+[package]
+name = "geos-workers"
+description = "Geos ingestion workers: connectors, normalizer, enrichment, correlation, schedulers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+geos-core = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,14 @@
+{
+  "name": "geos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Geos — multi-tenant OSINT event intelligence globe (workspace root).",
+  "license": "LicenseRef-NebularOS-NonCommercial-1.0",
+  "author": "Niklas Vorberg",
+  "scripts": {
+    "frontend": "pnpm --filter geos-frontend",
+    "dev": "pnpm --filter geos-frontend dev",
+    "build": "pnpm --filter geos-frontend build",
+    "lint": "pnpm --filter geos-frontend lint"
+  }
+}

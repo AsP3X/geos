@@ -1,0 +1,114 @@
+name: geos
+
+services:
+  postgres:
+    build: ./docker/postgres
+    image: geos-postgres
+    container_name: geos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-geos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-geos}
+      POSTGRES_DB: ${POSTGRES_DB:-geos}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-geos} -d ${POSTGRES_DB:-geos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: geos-meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum}
+      MEILI_ENV: ${MEILI_ENV:-development}
+    ports:
+      - "${MEILI_PORT:-7700}:7700"
+    volumes:
+      - meili_data:/meili_data
+
+  object-storage:
+    build: ./nebular-os
+    container_name: geos-object-storage
+    restart: unless-stopped
+    environment:
+      NOS_JWT_SECRET: ${NOS_JWT_SECRET:?Set NOS_JWT_SECRET in .env (min 32 chars)}
+      NOS_SIGNING_SECRET: ${NOS_SIGNING_SECRET:?Set NOS_SIGNING_SECRET in .env (min 32 chars)}
+      NOS_BIND_ADDR: 0.0.0.0:9000
+      NOS_DATA_DIR: /data/blobs
+      NOS_META_PATH: /data/meta/metadata.db
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "${STORAGE_PORT:-9000}:9000"
+    volumes:
+      - nebular_data:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/rust/Dockerfile
+      args:
+        BIN: geos-api
+    container_name: geos-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-geos}:${POSTGRES_PASSWORD:-geos}@postgres:5432/${POSTGRES_DB:-geos}
+      MEILI_URL: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum}
+      STORAGE_URL: http://object-storage:9000
+      GEOS_BIND_ADDR: 0.0.0.0:8080
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+      object-storage:
+        condition: service_started
+
+  workers:
+    build:
+      context: .
+      dockerfile: docker/rust/Dockerfile
+      args:
+        BIN: geos-workers
+    container_name: geos-workers
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-geos}:${POSTGRES_PASSWORD:-geos}@postgres:5432/${POSTGRES_DB:-geos}
+      MEILI_URL: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum}
+      STORAGE_URL: http://object-storage:9000
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+      object-storage:
+        condition: service_started
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    container_name: geos-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+    ports:
+      - "${FRONTEND_PORT:-4173}:4173"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  meili_data:
+  nebular_data:

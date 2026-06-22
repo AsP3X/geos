@@ -1,0 +1,18 @@
+[package]
+name = "geos-api"
+description = "Geos Axum HTTP + WebSocket API (/api/v1): auth, tenant scoping, RBAC, events."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+geos-core = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
