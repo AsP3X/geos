@@ -12,14 +12,21 @@ mod users;
 pub use auth_tokens::{
     find_valid_refresh_token, insert_refresh_token, revoke_refresh_token, RefreshTokenRow,
 };
-pub use connectors::touch_live_run;
-pub use events::{get_event, list_events, upsert_event, EventBBox, EventListFilter};
+pub use connectors::{
+    add_backfill_events_ingested, advance_backfill_count, advance_backfill_cursor,
+    ensure_event_partitions, get_connector_state, init_backfill_window, list_connector_states,
+    mark_backfill_complete, reconcile_backfill_window, touch_live_run, ConnectorState,
+};
+pub use events::{
+    get_event, list_events, upsert_event, upsert_events_backfill, EventBBox, EventListFilter,
+};
 pub use notify::{
     notify_event_upsert, EventNotifyAction, EventNotifyPayload, EVENT_NOTIFY_CHANNEL,
 };
 pub use pool::{connect_pool, run_migrations, PgPool};
 pub use tasks::{
-    claim_task, complete_task, enqueue_task, fail_task, EnqueueTask, WorkerTask, WorkerTaskStatus,
+    claim_task, complete_task, enqueue_task, fail_task, recover_stale_tasks, EnqueueTask,
+    WorkerTask, WorkerTaskStatus,
 };
 pub use tenants::{
     create_tenant_with_roles, find_membership_for_user, find_tenant_id_by_slug, insert_membership,

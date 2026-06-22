@@ -88,6 +88,15 @@ services:
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum!}
       STORAGE_URL: http://object-storage:9000
       RUST_LOG: ${RUST_LOG:-info}
+      # Historical backfill (newest -> oldest, resumable); defaults applied when unset.
+      BACKFILL_ENABLED: ${BACKFILL_ENABLED:-true}
+      BACKFILL_USGS_START: ${BACKFILL_USGS_START:-}
+      BACKFILL_CHUNK_HOURS: ${BACKFILL_CHUNK_HOURS:-6}
+      BACKFILL_CHUNKS_PER_RUN: ${BACKFILL_CHUNKS_PER_RUN:-4}
+      BACKFILL_REQUEST_DELAY_MS: ${BACKFILL_REQUEST_DELAY_MS:-0}
+      # Empty = all magnitudes (full catalog). Set a number to floor magnitude.
+      BACKFILL_USGS_MIN_MAGNITUDE: ${BACKFILL_USGS_MIN_MAGNITUDE:-}
+      BACKFILL_USGS_MAX_CONCURRENCY: ${BACKFILL_USGS_MAX_CONCURRENCY:-4}
     depends_on:
       postgres:
         condition: service_healthy

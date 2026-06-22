@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 use crate::events::{Category, Event, EventStatus, GeoPoint, Severity, VerificationStatus};
@@ -137,6 +138,146 @@ pub async fn upsert_event(pool: &PgPool, event: &Event) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Build a multi-row backfill upsert for one batch of events.
+///
+/// Rows are assembled by hand rather than with [`QueryBuilder::push_values`]:
+/// the `Separated` builder used by `push_values` injects a comma before every
+/// `push`, which corrupts the `::type` casts (producing `$1, ::event_category`
+/// and a SQL syntax error). Bind values are encoded into the builder eagerly,
+/// so per-row temporaries (e.g. the formatted embedding) need not outlive it.
+fn build_backfill_upsert(batch: &[Event]) -> QueryBuilder<'_, sqlx::Postgres> {
+    let mut builder = QueryBuilder::new(
+        r#"
+        INSERT INTO events (
+            id, tenant_id, source, source_event_id, category, severity, impact_score,
+            magnitude, title, summary, body, original_text, translated_text, language,
+            location, country, region, place_name,
+            occurred_at, detected_at, ingested_at,
+            status, verification_status, confidence,
+            tags, url, raw, embedding
+        ) VALUES "#,
+    );
+
+    for (i, event) in batch.iter().enumerate() {
+        if i > 0 {
+            builder.push(", ");
+        }
+        let embedding = event
+            .embedding
+            .as_ref()
+            .map(|values| format_pgvector(values.as_slice()));
+        builder.push("(");
+        builder.push_bind(event.id);
+        builder.push(", ");
+        builder.push_bind(event.tenant_id);
+        builder.push(", ");
+        builder.push_bind(&event.source);
+        builder.push(", ");
+        builder.push_bind(&event.source_event_id);
+        builder.push(", ");
+        builder.push_bind(pg_category(event.category));
+        builder.push("::event_category, ");
+        builder.push_bind(pg_severity(event.severity));
+        builder.push("::event_severity, ");
+        builder.push_bind(i16::from(event.impact_score));
+        builder.push(", ");
+        builder.push_bind(event.magnitude);
+        builder.push(", ");
+        builder.push_bind(&event.title);
+        builder.push(", ");
+        builder.push_bind(&event.summary);
+        builder.push(", ");
+        builder.push_bind(&event.body);
+        builder.push(", ");
+        builder.push_bind(&event.original_text);
+        builder.push(", ");
+        builder.push_bind(&event.translated_text);
+        builder.push(", ");
+        builder.push_bind(&event.language);
+        builder.push(", ST_SetSRID(ST_MakePoint(");
+        builder.push_bind(event.location.lon);
+        builder.push(", ");
+        builder.push_bind(event.location.lat);
+        builder.push("), 4326)::geography, ");
+        builder.push_bind(&event.country);
+        builder.push(", ");
+        builder.push_bind(&event.region);
+        builder.push(", ");
+        builder.push_bind(&event.place_name);
+        builder.push(", ");
+        builder.push_bind(event.occurred_at);
+        builder.push(", ");
+        builder.push_bind(event.detected_at);
+        builder.push(", ");
+        builder.push_bind(event.ingested_at);
+        builder.push(", ");
+        builder.push_bind(pg_status(event.status));
+        builder.push("::event_status, ");
+        builder.push_bind(pg_verification(event.verification_status));
+        builder.push("::verification_status, ");
+        builder.push_bind(event.confidence);
+        builder.push(", ");
+        builder.push_bind(&event.tags);
+        builder.push(", ");
+        builder.push_bind(&event.url);
+        builder.push(", ");
+        builder.push_bind(&event.raw);
+        builder.push("::jsonb, ");
+        builder.push_bind(embedding);
+        builder.push("::vector)");
+    }
+
+    builder.push(
+        r#"
+        ON CONFLICT (tenant_id, source, source_event_id, occurred_at) DO UPDATE SET
+            category = EXCLUDED.category,
+            severity = EXCLUDED.severity,
+            impact_score = EXCLUDED.impact_score,
+            magnitude = EXCLUDED.magnitude,
+            title = EXCLUDED.title,
+            summary = EXCLUDED.summary,
+            body = EXCLUDED.body,
+            original_text = EXCLUDED.original_text,
+            translated_text = EXCLUDED.translated_text,
+            language = EXCLUDED.language,
+            location = EXCLUDED.location,
+            country = EXCLUDED.country,
+            region = EXCLUDED.region,
+            place_name = EXCLUDED.place_name,
+            detected_at = EXCLUDED.detected_at,
+            ingested_at = EXCLUDED.ingested_at,
+            status = EXCLUDED.status,
+            verification_status = EXCLUDED.verification_status,
+            confidence = EXCLUDED.confidence,
+            tags = EXCLUDED.tags,
+            url = EXCLUDED.url,
+            raw = EXCLUDED.raw,
+            embedding = EXCLUDED.embedding
+        "#,
+    );
+
+    builder
+}
+
+/// Batch upsert for backfill: one round-trip per batch, no live-stream NOTIFY.
+///
+/// Returns the number of rows written (all events in the batch on success).
+pub async fn upsert_events_backfill(pool: &PgPool, events: &[Event]) -> Result<usize> {
+    if events.is_empty() {
+        return Ok(0);
+    }
+
+    const BATCH_SIZE: usize = 50;
+    let mut total = 0usize;
+
+    for batch in events.chunks(BATCH_SIZE) {
+        build_backfill_upsert(batch).build().execute(pool).await?;
+        total += batch.len();
+    }
+
+    Ok(total)
 }
 
 /// List events for one tenant with optional filters.
@@ -410,6 +551,41 @@ fn format_pgvector(values: &[f32]) -> String {
 mod tests {
     use super::*;
 
+    fn sample_event() -> Event {
+        let now = Utc::now();
+        Event {
+            id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            source: "usgs".to_owned(),
+            source_event_id: "abc123".to_owned(),
+            category: Category::Earthquake,
+            severity: Severity::High,
+            impact_score: 80,
+            magnitude: Some(5.1),
+            title: Some("Quake".to_owned()),
+            summary: None,
+            body: None,
+            original_text: None,
+            translated_text: None,
+            language: None,
+            location: GeoPoint { lon: 1.0, lat: 2.0 },
+            affected_area: None,
+            country: None,
+            region: None,
+            place_name: Some("Somewhere".to_owned()),
+            occurred_at: now,
+            detected_at: None,
+            ingested_at: now,
+            status: EventStatus::Active,
+            verification_status: VerificationStatus::Unverified,
+            confidence: 0.5,
+            tags: vec!["test".to_owned()],
+            url: None,
+            raw: serde_json::json!({"k": "v"}),
+            embedding: None,
+        }
+    }
+
     #[test]
     fn pg_enum_strings_match_migration() {
         assert_eq!(pg_category(Category::Earthquake), "earthquake");
@@ -419,5 +595,51 @@ mod tests {
             pg_verification(VerificationStatus::Unverified),
             "unverified"
         );
+    }
+
+    // Regression: the batch upsert previously used `QueryBuilder::push_values`,
+    // whose `Separated` builder inserts a comma before every `push`, turning the
+    // `::type` casts into `$n, ::event_category` and causing a Postgres syntax
+    // error ("syntax error at or near \"::\""). Backfill silently wrote 0 rows.
+    #[test]
+    fn backfill_upsert_sql_casts_are_not_comma_separated() {
+        let batch = vec![sample_event(), sample_event()];
+        let builder = build_backfill_upsert(&batch);
+        let sql = builder.sql().to_owned();
+
+        // The corrupting pattern must never appear.
+        assert!(
+            !sql.contains(", ::"),
+            "casts must attach to their bind, not be separate columns: {sql}"
+        );
+        // Casts attach directly to the preceding placeholder.
+        assert!(
+            sql.contains("::event_category, "),
+            "missing category cast: {sql}"
+        );
+        assert!(
+            sql.contains("::event_severity, "),
+            "missing severity cast: {sql}"
+        );
+        assert!(
+            sql.contains(")::geography, "),
+            "missing geography cast: {sql}"
+        );
+        assert!(
+            sql.contains("::event_status, "),
+            "missing status cast: {sql}"
+        );
+        assert!(
+            sql.contains("::verification_status, "),
+            "missing verification cast: {sql}"
+        );
+        assert!(sql.contains("::jsonb, "), "missing jsonb cast: {sql}");
+        // Two rows -> two value tuples, each terminated by the vector cast.
+        assert_eq!(
+            sql.matches("::vector)").count(),
+            2,
+            "expected two value rows: {sql}"
+        );
+        assert!(sql.contains("ON CONFLICT (tenant_id, source, source_event_id, occurred_at)"));
     }
 }

@@ -10,14 +10,25 @@ pub const INGEST_USGS_LIVE: &str = "ingest_usgs_live";
 /// Live NWS weather alerts feed ingestion.
 pub const INGEST_NWS_LIVE: &str = "ingest_nws_live";
 
+/// Historical USGS earthquake backfill (one bounded chunk batch per run).
+pub const INGEST_USGS_BACKFILL: &str = "ingest_usgs_backfill";
+
+/// Historical NWS weather alerts backfill (bounded to the available 7-day window).
+pub const INGEST_NWS_BACKFILL: &str = "ingest_nws_backfill";
+
 /// Build dedupe key for a source-scoped ingest task.
 pub fn ingest_dedupe_key(task_type: &str, source_key: &str) -> String {
     format!("{task_type}:{source_key}")
 }
 
+/// Payload carrying the source key for any source-scoped ingest task.
+pub fn source_payload(source_key: &str) -> Value {
+    json!({ "source_key": source_key })
+}
+
 /// Payload for live ingest tasks keyed by source.
 pub fn ingest_live_payload(source_key: &str) -> Value {
-    json!({ "source_key": source_key })
+    source_payload(source_key)
 }
 
 /// Payload for [`INGEST_USGS_LIVE`] tasks.

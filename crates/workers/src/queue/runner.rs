@@ -1,18 +1,25 @@
 //! Claim tasks from Postgres and dispatch to handlers.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use geos_core::db::{self, PgPool, WorkerTask};
 use geos_core::meili::MeiliClient;
 use geos_core::Result;
 use tracing::{error, info, warn};
 
-use crate::connector::{NwsWeatherConnector, UsgsEarthquakeConnector};
+use crate::backfill::{backfill_pending, run_backfill, BackfillConfig};
+use crate::connector::{
+    NwsWeatherConnector, UsgsEarthquakeConnector, NWS_HISTORY_DAYS, NWS_SOURCE, USGS_SOURCE,
+};
 use crate::ingest;
 
-use super::kinds::{INGEST_NWS_LIVE, INGEST_USGS_LIVE};
-use super::scheduler::Shutdown;
+use super::kinds::{INGEST_NWS_BACKFILL, INGEST_NWS_LIVE, INGEST_USGS_BACKFILL, INGEST_USGS_LIVE};
+use super::scheduler::{try_enqueue_backfill, Shutdown};
+
+/// Keep backfill tasks short so workers stay available for live polls.
+const BACKFILL_TASK_BUDGET: Duration = Duration::from_secs(25);
 
 /// Shared dependencies for task handlers (connectors, clients, etc.).
 pub struct WorkerRuntime {
@@ -22,15 +29,26 @@ pub struct WorkerRuntime {
     pub nws: NwsWeatherConnector,
     /// Meilisearch client for post-upsert indexing.
     pub meili: Option<MeiliClient>,
+    /// Historical backfill behavior.
+    pub backfill: BackfillConfig,
 }
 
 impl WorkerRuntime {
-    /// Build runtime with default connector instances.
+    /// Build runtime with default connector instances and backfill config.
     pub fn new(meili: Option<MeiliClient>) -> Self {
+        Self::with_config(meili, BackfillConfig::default())
+    }
+
+    /// Build runtime, applying the backfill request delay to the connectors.
+    pub fn with_config(meili: Option<MeiliClient>, backfill: BackfillConfig) -> Self {
         Self {
-            usgs: UsgsEarthquakeConnector::new(),
-            nws: NwsWeatherConnector::new(),
+            usgs: UsgsEarthquakeConnector::new()
+                .with_request_delay(backfill.request_delay)
+                .with_min_magnitude(backfill.usgs_min_magnitude)
+                .with_max_concurrency(backfill.usgs_max_concurrency),
+            nws: NwsWeatherConnector::new().with_request_delay(backfill.request_delay),
             meili,
+            backfill,
         }
     }
 }
@@ -133,10 +151,83 @@ async fn execute_task(pool: &PgPool, runtime: &WorkerRuntime, task: &WorkerTask)
             info!(?stats, task_id = %task.id, "NWS live ingest finished");
             Ok(())
         }
+        INGEST_USGS_BACKFILL => {
+            let upserted = run_backfill_during_budget(
+                pool,
+                &runtime.usgs,
+                task.tenant_id,
+                runtime.backfill.usgs_start,
+                &runtime.backfill,
+            )
+            .await
+            .map_err(|err| geos_core::AppError::internal(err.to_string()))?;
+            info!(upserted, task_id = %task.id, "USGS backfill batch finished");
+            chain_backfill_if_pending(pool, INGEST_USGS_BACKFILL, USGS_SOURCE, task.tenant_id)
+                .await?;
+            Ok(())
+        }
+        INGEST_NWS_BACKFILL => {
+            let earliest = Utc::now() - chrono::Duration::days(NWS_HISTORY_DAYS);
+            let upserted = run_backfill_during_budget(
+                pool,
+                &runtime.nws,
+                task.tenant_id,
+                earliest,
+                &runtime.backfill,
+            )
+            .await
+            .map_err(|err| geos_core::AppError::internal(err.to_string()))?;
+            info!(upserted, task_id = %task.id, "NWS backfill batch finished");
+            chain_backfill_if_pending(pool, INGEST_NWS_BACKFILL, NWS_SOURCE, task.tenant_id)
+                .await?;
+            Ok(())
+        }
         other => Err(geos_core::AppError::internal(format!(
             "unknown task type: {other}"
         ))),
     }
+}
+
+/// Run several backfill batches within a time budget so one task claim does not
+/// monopolize a worker for hours.
+async fn run_backfill_during_budget(
+    pool: &PgPool,
+    connector: &dyn crate::connector::Connector,
+    tenant_id: uuid::Uuid,
+    earliest: chrono::DateTime<Utc>,
+    config: &BackfillConfig,
+) -> std::result::Result<u64, crate::ingest::IngestError> {
+    let deadline = Instant::now() + BACKFILL_TASK_BUDGET;
+    let source_key = connector.source_key();
+    let mut total = 0u64;
+
+    while Instant::now() < deadline
+        && backfill_pending(pool, tenant_id, source_key)
+            .await
+            .map_err(crate::ingest::IngestError::Core)?
+    {
+        let upserted = run_backfill(pool, connector, tenant_id, earliest, config).await?;
+        total += upserted;
+        if upserted == 0 {
+            break;
+        }
+    }
+
+    Ok(total)
+}
+
+/// Immediately queue the next backfill batch when work remains (avoids waiting
+/// for the scheduler tick).
+async fn chain_backfill_if_pending(
+    pool: &PgPool,
+    task_type: &str,
+    source_key: &str,
+    tenant_id: uuid::Uuid,
+) -> Result<()> {
+    if backfill_pending(pool, tenant_id, source_key).await? {
+        try_enqueue_backfill(pool, task_type, source_key).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

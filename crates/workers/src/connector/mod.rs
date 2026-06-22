@@ -1,5 +1,6 @@
 //! Shared [`Connector`] trait and ingestion error types (`connector-contract.mdc`).
 
+mod http;
 mod nws;
 mod usgs;
 
@@ -8,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use thiserror::Error;
 
-pub use nws::NwsWeatherConnector;
+pub use nws::{NwsWeatherConnector, NWS_HISTORY_DAYS};
 pub use usgs::UsgsEarthquakeConnector;
 
 /// Stable source key for idempotency (`source + source_event_id`).
@@ -71,4 +72,13 @@ pub trait Connector: Send + Sync {
 
     /// Fetch events in a historical time window for backfill.
     async fn fetch_historical(&self, range: HistoricalRange) -> Result<Vec<RawRecord>>;
+
+    /// Total events matching a window, when the source can report it up front.
+    ///
+    /// Used to seed accurate count-based backfill progress. Returns `None` by
+    /// default for sources without a count capability (progress then falls back
+    /// to time coverage).
+    async fn count_historical(&self, _range: HistoricalRange) -> Result<Option<u64>> {
+        Ok(None)
+    }
 }

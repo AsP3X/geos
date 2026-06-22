@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use geos_core::meili::MeiliClient;
+use geos_workers::backfill::BackfillConfig;
 use geos_workers::queue::{
     bootstrap_tasks, run_scheduler_loop, run_worker_loop, Shutdown, WorkerRuntime,
     DEFAULT_POLL_INTERVAL,
@@ -35,18 +36,34 @@ async fn main() {
     }
 
     let shutdown = Shutdown::new();
-    let runtime = Arc::new(WorkerRuntime::new(meili));
+    let backfill_config = BackfillConfig::from_env();
+    let backfill_enabled = backfill_config.enabled;
+    let runtime = Arc::new(WorkerRuntime::with_config(meili, backfill_config));
     let poll_interval = worker_poll_interval();
     let concurrency = worker_concurrency();
 
-    if let Err(err) = bootstrap_tasks(&pool).await {
+    if let Err(err) = bootstrap_tasks(&pool, backfill_enabled).await {
         tracing::error!(error = %err, "failed to bootstrap task queue");
+    }
+
+    match geos_core::db::recover_stale_tasks(&pool, Duration::from_secs(120)).await {
+        Ok(count) if count > 0 => {
+            tracing::warn!(count, "reclaimed stale running worker tasks");
+        }
+        Err(err) => tracing::error!(error = %err, "failed to reclaim stale worker tasks"),
+        _ => {}
     }
 
     let scheduler_shutdown = shutdown.clone();
     let scheduler_pool = pool.clone();
     let scheduler_handle = tokio::spawn(async move {
-        run_scheduler_loop(scheduler_pool, poll_interval, scheduler_shutdown).await;
+        run_scheduler_loop(
+            scheduler_pool,
+            poll_interval,
+            scheduler_shutdown,
+            backfill_enabled,
+        )
+        .await;
     });
 
     let mut worker_handles = Vec::with_capacity(concurrency);

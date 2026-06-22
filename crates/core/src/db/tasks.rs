@@ -113,6 +113,32 @@ pub async fn claim_task(pool: &PgPool, worker_id: &str) -> Result<Option<WorkerT
     Ok(row.map(ClaimedTaskRow::into_worker_task))
 }
 
+/// Reclaim tasks left in `running` after a worker crash or long hang.
+pub async fn recover_stale_tasks(pool: &PgPool, max_age: std::time::Duration) -> Result<u64> {
+    let seconds = max_age.as_secs().max(1) as i64;
+    let reclaimed = sqlx::query_scalar::<_, i64>(
+        r#"
+        WITH reclaimed AS (
+            UPDATE worker_tasks
+            SET
+                status = 'pending',
+                locked_at = NULL,
+                locked_by = NULL,
+                updated_at = now()
+            WHERE status = 'running'
+              AND locked_at IS NOT NULL
+              AND locked_at < now() - make_interval(secs => $1)
+            RETURNING id
+        )
+        SELECT COUNT(*)::bigint FROM reclaimed
+        "#,
+    )
+    .bind(seconds)
+    .fetch_one(pool)
+    .await?;
+    Ok(reclaimed.max(0) as u64)
+}
+
 /// Mark a task completed after successful handler execution.
 pub async fn complete_task(pool: &PgPool, task_id: Uuid) -> Result<()> {
     sqlx::query(
