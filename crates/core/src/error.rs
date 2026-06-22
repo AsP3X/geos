@@ -58,6 +58,10 @@ pub enum AppError {
     /// logs only and is never sent to clients.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Database layer failure (HTTP 500). Detail is for logs only.
+    #[error("database error: {0}")]
+    Database(String),
 }
 
 impl AppError {
@@ -115,7 +119,7 @@ impl AppError {
             Self::Conflict(_) => "conflict",
             Self::RateLimited(_) => "rate_limited",
             Self::Config(_) => "config",
-            Self::Internal(_) => "internal",
+            Self::Internal(_) | Self::Database(_) => "internal",
         }
     }
 
@@ -130,7 +134,7 @@ impl AppError {
             Self::Conflict(_) => 409,
             Self::RateLimited(_) => 429,
             // Config errors surface at boot, not over HTTP, but map to 500.
-            Self::Config(_) | Self::Internal(_) => 500,
+            Self::Config(_) | Self::Internal(_) | Self::Database(_) => 500,
         }
     }
 
@@ -146,7 +150,9 @@ impl AppError {
             | Self::Conflict(m)
             | Self::RateLimited(m) => m.clone(),
             Self::Validation { message, .. } => message.clone(),
-            Self::Config(_) | Self::Internal(_) => "Internal server error".to_owned(),
+            Self::Config(_) | Self::Internal(_) | Self::Database(_) => {
+                "Internal server error".to_owned()
+            }
         }
     }
 

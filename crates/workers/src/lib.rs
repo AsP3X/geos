@@ -5,4 +5,6 @@
 //! and schedulers. Fetch returns raw records; persistence is a separate stage.
 
 pub mod connector;
+pub mod ingest;
 pub mod normalizer;
+pub mod queue;

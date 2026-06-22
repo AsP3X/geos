@@ -5,6 +5,7 @@ WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY migrations ./migrations
 
 ARG BIN=geos-api
 RUN cargo build --release --locked --bin ${BIN}

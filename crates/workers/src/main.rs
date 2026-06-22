@@ -1,10 +1,12 @@
 //! Entry point for the Geos ingestion workers.
-//!
-//! Scaffold only: initializes structured logging, reports readiness, then waits
-//! for a shutdown signal so the process stays alive (rather than exiting and
-//! crash-looping under Docker's restart policy). The `Connector` trait, USGS
-//! connector, normalizer, enrichment, correlation engine, and schedulers are
-//! added by the `workers` work in the plan.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use geos_workers::queue::{
+    bootstrap_tasks, run_scheduler_loop, run_worker_loop, Shutdown, WorkerRuntime,
+    DEFAULT_POLL_INTERVAL,
+};
 
 #[tokio::main]
 async fn main() {
@@ -15,22 +17,109 @@ async fn main() {
         )
         .try_init();
 
+    tracing::info!(version = geos_core::VERSION, "geos-workers starting");
+
+    let pool = match connect_database().await {
+        Ok(pool) => pool,
+        Err(reason) => {
+            tracing::error!(%reason, "database unavailable; queue workers idle until shutdown");
+            wait_for_shutdown().await;
+            tracing::info!("geos-workers shutting down");
+            return;
+        }
+    };
+
+    let shutdown = Shutdown::new();
+    let runtime = Arc::new(WorkerRuntime::new());
+    let poll_interval = worker_poll_interval();
+    let concurrency = worker_concurrency();
+
+    if let Err(err) = bootstrap_tasks(&pool).await {
+        tracing::error!(error = %err, "failed to bootstrap task queue");
+    }
+
+    let scheduler_shutdown = shutdown.clone();
+    let scheduler_pool = pool.clone();
+    let scheduler_handle = tokio::spawn(async move {
+        run_scheduler_loop(scheduler_pool, poll_interval, scheduler_shutdown).await;
+    });
+
+    let mut worker_handles = Vec::with_capacity(concurrency);
+    for index in 0..concurrency {
+        let worker_id = worker_instance_id(index);
+        let worker_pool = pool.clone();
+        let worker_runtime = Arc::clone(&runtime);
+        let worker_shutdown = shutdown.clone();
+        worker_handles.push(tokio::spawn(async move {
+            run_worker_loop(
+                worker_pool,
+                worker_id,
+                worker_runtime,
+                Duration::from_millis(500),
+                worker_shutdown,
+            )
+            .await;
+        }));
+    }
+
     tracing::info!(
-        version = geos_core::VERSION,
-        "geos-workers scaffold started; awaiting shutdown signal"
+        concurrency,
+        poll_interval_secs = poll_interval.as_secs(),
+        "geos-workers ready; task queue active"
     );
 
-    // Human: No scheduler/poller loop exists yet, so we block until SIGINT/SIGTERM
-    // to keep the container running instead of exiting and being restarted.
-    // Agent: AWAITS Ctrl-C or SIGTERM; replaced by the Tokio scheduler later.
     wait_for_shutdown().await;
+    shutdown.trigger();
+
+    for handle in worker_handles {
+        let _ = handle.await;
+    }
+    let _ = scheduler_handle.await;
 
     tracing::info!("geos-workers shutting down");
 }
 
-// Human: Resolves on the first of Ctrl-C (SIGINT) or SIGTERM (e.g. `docker
-// stop`); on signal-registration error we park forever so we never busy-exit.
-// Agent: RETURNS on SIGINT|SIGTERM; unix uses SignalKind::terminate; non-unix waits on ctrl_c only.
+// Human: Connect and migrate Postgres when DATABASE_URL is present.
+// Agent: READS DATABASE_URL; CALLS connect_pool, run_migrations; RETURNS error reason.
+async fn connect_database() -> Result<geos_core::db::PgPool, String> {
+    let db_url = match std::env::var("DATABASE_URL") {
+        Ok(url) if !url.trim().is_empty() => url,
+        _ => return Err("DATABASE_URL not set".to_owned()),
+    };
+
+    let pool = geos_core::db::connect_pool(&db_url)
+        .await
+        .map_err(|err| format!("connection failed: {err}"))?;
+
+    geos_core::db::run_migrations(&pool)
+        .await
+        .map_err(|err| format!("migration failed: {err}"))?;
+
+    Ok(pool)
+}
+
+fn worker_concurrency() -> usize {
+    std::env::var("WORKER_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2)
+}
+
+fn worker_poll_interval() -> Duration {
+    std::env::var("WORKER_POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_POLL_INTERVAL)
+}
+
+fn worker_instance_id(index: usize) -> String {
+    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "local".to_owned());
+    format!("{host}-{index}-{}", uuid::Uuid::new_v4())
+}
+
 async fn wait_for_shutdown() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;

@@ -27,6 +27,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+    "migrate",
+    "macros",
+    "chrono",
+    "uuid",
+    "json",
+    "derive",
+] }
 
 # Shared lint policy for every workspace crate. Mirrors rust/rust-quality.mdc
 # and rust/no-allow-dead-code.mdc so violations fail the build, not just review.
