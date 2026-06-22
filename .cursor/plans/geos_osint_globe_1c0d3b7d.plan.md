@@ -6,19 +6,22 @@ todos:
     content: "Scaffold Cargo workspace (crates/core, api, workers, cli), pnpm frontend, nebular-os git submodule (object storage), docker-compose (postgres+postgis+pgvector, meilisearch, object-storage from ./nebular-os), root LICENSE (Nebular OS Private Non-Commercial v1.0), and copy/adapt .cursor/rules from ownly, cloudwrkz, aurora incl. nebular-os-vendor.mdc (dedupe, take most complete versions, add Geos project-layout.mdc)"
     status: pending
   - id: core-schema
-    content: "Implement core crate: canonical Event model + JSON schema, config, errors, SQLx DB layer + PostGIS+pgvector migrations (events incl. embedding + original/translated text, event_relations, entities/event_entities, sources, connectors_state, tenants, users, memberships, roles/permissions/role_permissions, api_keys, mfa_secrets, password_reset_tokens, email_verification_tokens, audit_log, geo_reference, event_annotations, saved_filters, media refs), settings (backfill/retention), AiProvider trait incl. embeddings (Anthropic/OpenAI/Ollama), nebular-os storage client"
+    content: "Implement core crate: canonical Event model + JSON schema (incl. impact_score 0-100, severity tier, verification_status), config, errors, SQLx DB layer + PostGIS+pgvector migrations with monthly time-partitioned events (embedding + original/translated text), event_relations, entities/event_entities, sources (reliability rating), connectors_state, tenants, plans/quotas, users, memberships, roles/permissions/role_permissions, super_admins, api_keys, mfa_secrets, password_reset_tokens, email_verification_tokens, audit_log, geo_reference, event_annotations, saved_filters, media refs; settings (backfill/retention), versioned impact-scoring logic, AiProvider trait incl. embeddings (Anthropic/OpenAI/Ollama), nebular-os storage client"
     status: pending
   - id: workers
     content: "Build Connector trait + UsgsEarthquakeConnector then Weather connector (live + historical backfill, depth from settings), normalizer, AI enrichment (summarize, translate, classify category/severity, extract entities, generate embeddings), offline Natural Earth/GADM geocode + fetch-and-store local geo_reference mirror (OSM/others), cross-source dedupe/entity resolution (geo+time+vector), Meilisearch + pgvector indexing, Tokio scheduler/pollers, DB NOTIFY emission"
     status: pending
   - id: api
-    content: "Build Axum /api/v1: JWT+argon2 auth with password reset + TOTP MFA (email verification scaffolded/optional), tenant scoping, granular RBAC (Owner/Analyst/Viewer presets + custom roles), API keys, events list/filter/bbox (PostGIS), hybrid search (Meilisearch + pgvector semantic), relations, entities, saved filters, annotations/verification, exports (GeoJSON/CSV), media upload via nebular-os, WebSocket live stream, audit logging (notifications deferred)"
+    content: "Build Axum /api/v1: JWT+argon2 auth with password reset + TOTP MFA (email verification scaffolded/optional), tenant scoping, granular RBAC (Owner/Analyst/Viewer presets + custom roles), API keys + per-tenant rate limiting/quotas, OpenAPI docs, events list/filter/bbox (PostGIS) incl. impact-score/verification/trust filters, hybrid search (Meilisearch + pgvector semantic), relations + graph endpoints, entities, saved filters, annotations/verification, exports (GeoJSON/CSV), media upload via nebular-os, WebSocket live stream, global rate limiting/abuse protection, audit logging (notifications deferred)"
+    status: pending
+  - id: operator-admin
+    content: "Build operator (super-admin) console + API: manage tenants, plans/quotas, connectors (enable/disable, trigger backfill, health), system metrics/usage, and customer API keys; guarded by platform super-admin role distinct from tenant RBAC"
     status: pending
   - id: observability
     content: "Wire observability + air-gapped support: tracing structured logs, Prometheus metrics, OpenTelemetry traces, Sentry error tracking; config flag to run core features offline (local Ollama embeddings + AI, offline geocode, mirrored data, nebular-os storage) with external connectors/cloud AI optional"
     status: pending
   - id: frontend
-    content: "Build React+Vite+Tailwind+shadcn desktop dark frontend: stylized r3f globe (shader earth + atmosphere + offline country borders) with density/heatmap toggle, category/severity markers, relation arcs, left selector sidebar, top fuzzy+semantic search, right toggleable blurred filter sidebar (incl. entity filters), event detail panel with media viewer + annotations, timeline/time-scrubber replay, auth screens (login/reset/MFA), REST + WebSocket data layer"
+    content: "Build React+Vite+Tailwind+shadcn desktop dark frontend (i18next-ready, command palette): stylized r3f globe (shader earth + atmosphere + offline country borders) with density/heatmap toggle, category/severity/impact markers, relation arcs, interactive node-link graph view, left selector sidebar, top fuzzy+semantic search, right toggleable blurred filter sidebar (impact slider, verification/trust + entity filters), event detail panel with media viewer + annotations/verification, timeline/time-scrubber replay, auth screens (login/reset/MFA), REST + WebSocket data layer"
     status: pending
   - id: correlation
     content: "Implement correlation engine: deterministic geo-temporal clustering (PostGIS ST_DWithin + time/tag overlap) + vector similarity (pgvector) for cross-source merge and related-events, then AI labeling/scoring via provider abstraction, writing event_relations"
@@ -27,7 +30,7 @@ todos:
     content: Build ratatui interactive TUI CLI (lazygit/btop-style) for browsing/managing events, running queries, managing connectors/backfill, and viewing relations against the API/DB
     status: pending
   - id: scripts-polish
-    content: "Add dev scripts (dev, db, seed, lint, gen-types), CI pipeline (clippy/fmt, eslint, Rust + frontend tests, build), seed sample data + offline reference datasets, write tests, finalize README and rule adjustments"
+    content: "Add dev scripts (dev, db, seed, lint, gen-types, submodule init, db backup/restore), secrets/config management (.env + validation), CI pipeline (clippy/fmt, eslint, Rust + frontend tests, build), Playwright e2e tests, seed sample data + offline reference datasets, finalize README and rule adjustments"
     status: pending
 isProject: false
 ---
@@ -225,3 +228,14 @@ Scaffold workspace + Docker + rules -> core crate + canonical schema + migration
 - Production + storage: single-server Docker Compose for prod; media via self-hosted nebular-os object storage (S3-compatible), kept cloud/S3-portable. Kubernetes can come later without app changes.
 - UI: desktop-first, dark theme only (command-center aesthetic). Responsive/light themes deferred.
 - License: Nebular OS Private Non-Commercial License v1.0 (Copyright (c) 2026 Niklas Vorberg) — source-available, non-commercial for third parties; as copyright holder you retain full rights to commercialize/sell Geos. Ship the `LICENSE` file at repo root.
+
+## 14. Further refinements (confirmed)
+
+- Unified impact scoring: every event gets a normalized `impact_score` (0-100) derived from category, magnitude, casualties/affected count, affected area, and source confidence, plus a coarse `severity` tier (info -> critical). This lets a single slider in the filter sidebar compare a started war against a burst water pipe. Scoring logic lives in `crates/core` (deterministic, versioned) and is recomputed on enrichment; weights are configurable.
+- Source trust + verification: `sources` carries a reliability rating; each event carries a `verification_status` (verified / unverified / rumor / disputed) alongside the numeric `confidence`. Both are displayed on the globe/detail panel and are filterable. Verification status is updatable via the annotation/verification workflow and audit-logged.
+- Scale / partitioning: the `events` table is time-partitioned (monthly partitions) from the start, with retention/archival routines, so high ingestion volume does not force a painful later migration. Spatial + vector + time indexes are defined per partition strategy.
+- Relationship graph view: in addition to globe relation arcs, ship an interactive node-link graph view (events + entities as nodes, relations as edges) for investigating connections. Backed by the relations/entities API; filterable and cross-linked with the globe selection.
+- Operator (super-admin) console: a minimal operator area (separate from tenant UI) for you as the SaaS operator to manage tenants, connectors (enable/disable, backfill, health), system health/metrics, usage, and customer API keys/quotas. Guarded by a platform-level super-admin role distinct from tenant RBAC.
+- Public/customer API: a documented REST API with OpenAPI spec, per-tenant API keys, and per-tenant rate limiting + quotas (tied to the plan model). API key + quota management is exposed both to tenants and in the operator admin console.
+- i18n: English UI for v1, but built on an i18n framework (e.g. i18next) so additional languages can be added without refactoring. (Distinct from AI translation of event content.)
+- Operational hardening (in scope): automated DB backup/restore scripts; structured secrets/config management (.env with validation, ready to swap to a vault); global rate limiting + basic abuse protection; end-to-end frontend tests (Playwright); and a command palette / keyboard-driven UX in the frontend for a power-user feel consistent with the command-center aesthetic.
