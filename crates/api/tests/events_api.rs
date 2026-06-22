@@ -163,6 +163,38 @@ async fn events_require_auth_and_respect_tenant_isolation() {
     let list_json = read_json(list_a).await;
     assert_eq!(list_json["items"].as_array().unwrap().len(), 1);
 
+    // min_impact above the sample event's score (42) excludes it.
+    let filtered_out = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/events?min_impact=90")
+                .header("authorization", format!("Bearer {token_a}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(filtered_out.status(), StatusCode::OK);
+    let filtered_json = read_json(filtered_out).await;
+    assert_eq!(filtered_json["items"].as_array().unwrap().len(), 0);
+
+    // An out-of-range min_impact is rejected.
+    let bad_impact = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/events?min_impact=150")
+                .header("authorization", format!("Bearer {token_a}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_impact.status(), StatusCode::BAD_REQUEST);
+
     let cross_tenant = app
         .clone()
         .oneshot(

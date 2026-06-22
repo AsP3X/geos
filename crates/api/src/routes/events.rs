@@ -35,6 +35,8 @@ pub struct ListEventsQuery {
     pub occurred_after: Option<DateTime<Utc>>,
     /// ISO-8601 upper bound on `occurred_at`.
     pub occurred_before: Option<DateTime<Utc>>,
+    /// Minimum impact score (0–100); events below are excluded.
+    pub min_impact: Option<i64>,
     /// Page size (default 50, max 200).
     pub limit: Option<i64>,
     /// Pagination offset.
@@ -61,6 +63,7 @@ pub async fn list(
     auth.require_permission(Permission::EventsRead)?;
 
     let bbox = parse_bbox(query.min_lon, query.min_lat, query.max_lon, query.max_lat)?;
+    let min_impact = parse_min_impact(query.min_impact)?;
 
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
@@ -74,6 +77,7 @@ pub async fn list(
             severity: query.severity,
             occurred_after: query.occurred_after,
             occurred_before: query.occurred_before,
+            min_impact,
             limit,
             offset,
         },
@@ -100,6 +104,16 @@ pub async fn get_by_id(
         .ok_or_else(|| AppError::not_found("event not found"))?;
 
     Ok(Json(event))
+}
+
+fn parse_min_impact(value: Option<i64>) -> Result<Option<u8>, AppError> {
+    match value {
+        None => Ok(None),
+        Some(score) if (0..=100).contains(&score) => Ok(Some(score as u8)),
+        Some(_) => Err(AppError::bad_request(
+            "min_impact must be between 0 and 100",
+        )),
+    }
 }
 
 fn parse_bbox(

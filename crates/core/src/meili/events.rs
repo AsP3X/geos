@@ -114,7 +114,7 @@ pub async fn ensure_events_index(client: &Client) -> Result<()> {
     }
 
     index
-        .set_filterable_attributes(["tenant_id", "category", "severity"])
+        .set_filterable_attributes(["tenant_id", "category", "severity", "impact_score"])
         .await
         .map_err(map_meili_err)?;
     index
@@ -147,15 +147,44 @@ pub async fn upsert_event_document(client: &Client, event: &Event) -> Result<()>
     Ok(())
 }
 
-/// Run a tenant-scoped full-text search.
+/// Optional attribute filters applied on top of tenant scoping during search.
+#[derive(Debug, Clone, Default)]
+pub struct SearchFilters {
+    /// Restrict to one category.
+    pub category: Option<Category>,
+    /// Restrict to one severity tier.
+    pub severity: Option<Severity>,
+    /// Minimum impact score (0–100).
+    pub min_impact: Option<u8>,
+}
+
+impl SearchFilters {
+    /// Build the Meilisearch filter expression, always tenant-scoped.
+    fn to_expression(&self, tenant_id: Uuid) -> String {
+        let mut clauses = vec![format!("tenant_id = \"{tenant_id}\"")];
+        if let Some(category) = self.category {
+            clauses.push(format!("category = \"{}\"", category_str(category)));
+        }
+        if let Some(severity) = self.severity {
+            clauses.push(format!("severity = \"{}\"", severity_str(severity)));
+        }
+        if let Some(min_impact) = self.min_impact {
+            clauses.push(format!("impact_score >= {min_impact}"));
+        }
+        clauses.join(" AND ")
+    }
+}
+
+/// Run a tenant-scoped full-text search with optional attribute filters.
 pub async fn search_events(
     client: &Client,
     tenant_id: Uuid,
     query: &str,
+    filters: &SearchFilters,
     limit: usize,
     offset: usize,
 ) -> Result<SearchResults> {
-    let filter = format!("tenant_id = \"{tenant_id}\"");
+    let filter = filters.to_expression(tenant_id);
     let results = client
         .index(EVENTS_INDEX)
         .search()

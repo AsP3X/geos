@@ -3,7 +3,8 @@
 mod events;
 
 pub use events::{
-    ensure_events_index, search_events, upsert_event_document, EventSearchHit, SearchResults,
+    ensure_events_index, search_events, upsert_event_document, EventSearchHit, SearchFilters,
+    SearchResults,
 };
 
 use std::sync::Arc;

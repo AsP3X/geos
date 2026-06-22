@@ -35,6 +35,8 @@ pub struct EventListFilter {
     pub occurred_after: Option<DateTime<Utc>>,
     /// Include events at or before this time.
     pub occurred_before: Option<DateTime<Utc>>,
+    /// Include only events with `impact_score` at or above this threshold (0–100).
+    pub min_impact: Option<u8>,
     /// Page size (clamped by caller).
     pub limit: i64,
     /// Pagination offset.
@@ -187,6 +189,11 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<
     if let Some(before) = filter.occurred_before {
         builder.push(" AND occurred_at <= ");
         builder.push_bind(before);
+    }
+
+    if let Some(min_impact) = filter.min_impact {
+        builder.push(" AND impact_score >= ");
+        builder.push_bind(i16::from(min_impact));
     }
 
     builder.push(" ORDER BY occurred_at DESC LIMIT ");

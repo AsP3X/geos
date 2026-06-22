@@ -1,7 +1,13 @@
 import { type FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Radio } from "lucide-react";
+import { ChevronLeft, ChevronRight, Radio, SlidersHorizontal, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { EventDetail, EventList } from "@/components/events/EventPanels";
+import { FilterPanel } from "@/components/filters/FilterPanel";
+import {
+  DEFAULT_FILTERS,
+  type EventFilters,
+  filtersAreActive,
+} from "@/components/filters/filters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useEventStream } from "@/hooks/useEventStream";
@@ -52,6 +58,8 @@ export function CommandCenterPage() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filters, setFilters] = useState<EventFilters>(DEFAULT_FILTERS);
 
   const selectedEvent = useMemo(
     () => events.find((event) => event.id === selectedId) ?? null,
@@ -66,7 +74,12 @@ export function CommandCenterPage() {
     }
     setAccessToken(token);
     try {
-      const response = await listEvents(token, { limit: 100 });
+      const response = await listEvents(token, {
+        limit: 100,
+        category: filters.category,
+        severity: filters.severity,
+        minImpact: filters.minImpact,
+      });
       setEvents(response.items);
       setSelectedId((current) => current ?? response.items[0]?.id ?? null);
     } catch (err) {
@@ -74,7 +87,7 @@ export function CommandCenterPage() {
     } finally {
       setLoading(false);
     }
-  }, [getAccessToken]);
+  }, [getAccessToken, filters]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch on mount
@@ -105,7 +118,11 @@ export function CommandCenterPage() {
     setLoading(true);
     setError(null);
     try {
-      const results = await searchEvents(token, q);
+      const results = await searchEvents(token, q, {
+        category: filters.category,
+        severity: filters.severity,
+        minImpact: filters.minImpact,
+      });
       const mapped: Event[] = results.hits.map((hit) => ({
         id: hit.id,
         tenant_id: hit.tenant_id,
@@ -258,6 +275,40 @@ export function CommandCenterPage() {
           onClick={() => setRightOpen(true)}
         >
           <ChevronLeft size={18} />
+        </button>
+      )}
+
+      {/* Floating filters panel (bottom-right, collapsible). */}
+      {filtersOpen ? (
+        <aside
+          className={`absolute bottom-4 right-4 z-20 w-[min(17rem,calc(100vw-2rem))] ${FLOATING_CARD_CLASS}`}
+        >
+          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <span className={CARD_LABEL_CLASS}>Filters</span>
+            <button
+              type="button"
+              aria-label="Close filters panel"
+              className={CARD_TOGGLE_CLASS}
+              onClick={() => setFiltersOpen(false)}
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <FilterPanel filters={filters} onChange={setFilters} />
+          </div>
+        </aside>
+      ) : (
+        <button
+          type="button"
+          aria-label="Open filters panel"
+          className="glass-panel absolute bottom-4 right-4 z-20 flex size-11 items-center justify-center rounded-2xl text-foreground/60 transition-colors hover:text-foreground"
+          onClick={() => setFiltersOpen(true)}
+        >
+          <SlidersHorizontal size={18} />
+          {filtersAreActive(filters) ? (
+            <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" aria-hidden />
+          ) : null}
         </button>
       )}
     </div>
