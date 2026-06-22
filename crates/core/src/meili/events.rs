@@ -96,11 +96,21 @@ pub struct SearchResults {
 pub async fn ensure_events_index(client: &Client) -> Result<()> {
     let index = client.index(EVENTS_INDEX);
 
+    // Human: Both geos-api and geos-workers bootstrap this index at startup.
+    // Meilisearch index creation is asynchronous, so two near-simultaneous
+    // creates can race; the loser's task fails with "index already exists".
+    // We await the create task and treat an index that ends up existing as
+    // success, so the race never propagates as an application error.
+    // Agent: TOLERATES concurrent create race; ERRORS only if index truly absent.
     if client.get_index(EVENTS_INDEX).await.is_err() {
-        client
-            .create_index(EVENTS_INDEX, Some("id"))
-            .await
-            .map_err(map_meili_err)?;
+        if let Ok(task) = client.create_index(EVENTS_INDEX, Some("id")).await {
+            let _ = task.wait_for_completion(client, None, None).await;
+        }
+        if client.get_index(EVENTS_INDEX).await.is_err() {
+            return Err(crate::error::AppError::internal(
+                "failed to create meilisearch events index",
+            ));
+        }
     }
 
     index

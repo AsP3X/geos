@@ -124,6 +124,16 @@ pub async fn upsert_event(pool: &PgPool, event: &Event) -> Result<()> {
     .bind(embedding)
     .execute(pool)
     .await?;
+
+    if let Err(err) = super::notify::notify_event_upsert(pool, event.tenant_id, event.id).await {
+        tracing::warn!(
+            event_id = %event.id,
+            tenant_id = %event.tenant_id,
+            error = %err,
+            "failed to emit event upsert notification"
+        );
+    }
+
     Ok(())
 }
 

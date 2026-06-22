@@ -102,8 +102,6 @@ services:
       dockerfile: docker/frontend/Dockerfile
     container_name: geos-frontend
     restart: unless-stopped
-    environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
     ports:
       - "${FRONTEND_PORT:-4173}:4173"
     depends_on:

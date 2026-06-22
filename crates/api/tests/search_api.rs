@@ -8,6 +8,7 @@ use axum::{
     Router,
 };
 use chrono::Utc;
+use geos_api::stream::EventStreamHub;
 use geos_api::{build_router, AppState};
 use geos_core::config::Config;
 use geos_core::db::{connect_pool, run_migrations, upsert_event};
@@ -38,6 +39,7 @@ async fn setup() -> Option<AppState> {
         config,
         pool,
         meili,
+        stream: EventStreamHub::default(),
     })
 }
 

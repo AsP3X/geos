@@ -3,6 +3,7 @@
 mod auth_tokens;
 mod connectors;
 mod events;
+mod notify;
 mod pool;
 mod tasks;
 mod tenants;
@@ -13,6 +14,9 @@ pub use auth_tokens::{
 };
 pub use connectors::touch_live_run;
 pub use events::{get_event, list_events, upsert_event, EventBBox, EventListFilter};
+pub use notify::{
+    notify_event_upsert, EventNotifyAction, EventNotifyPayload, EVENT_NOTIFY_CHANNEL,
+};
 pub use pool::{connect_pool, run_migrations, PgPool};
 pub use tasks::{
     claim_task, complete_task, enqueue_task, fail_task, EnqueueTask, WorkerTask, WorkerTaskStatus,

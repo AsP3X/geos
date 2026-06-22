@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 
+use geos_api::stream::{run_event_listener, EventStreamHub};
 use geos_api::{build_router, AppState};
 use geos_core::config::Config;
 use geos_core::db::{connect_pool, run_migrations};
@@ -30,10 +31,18 @@ async fn run() -> geos_core::Result<()> {
     let meili = MeiliClient::new(&config.meili_url, &config.meili_master_key)?;
     meili::ensure_events_index(meili.client()).await?;
 
+    let stream = EventStreamHub::default();
+    let listener_url = config.database_url.clone();
+    let listener_tx = stream.publisher();
+    tokio::spawn(async move {
+        run_event_listener(&listener_url, listener_tx).await;
+    });
+
     let state = AppState {
         config: config.clone(),
         pool,
         meili,
+        stream,
     };
 
     let app = build_router(state);

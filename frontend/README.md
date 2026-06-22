@@ -9,7 +9,14 @@ search, and live event updates over WebSocket.
 | Path | Purpose |
 | --- | --- |
 | `src/main.tsx` | App bootstrap (React root). |
-| `src/App.tsx` | Root component. |
+| `src/App.tsx` | Router: login, register, command center. |
+| `src/auth/context.tsx` | Auth session provider (JWT + refresh). |
+| `src/hooks/useAuth.ts` | Auth hook for pages. |
+| `src/hooks/useEventStream.ts` | WebSocket live event subscription. |
+| `src/lib/api-client.ts` | REST client for auth and protected routes. |
+| `src/lib/events-api.ts` | Events list, search, stream URL helpers. |
+| `src/pages/` | Login, register, command center UI. |
+| `src/components/globe/GlobeViewport.tsx` | 2D globe scaffold (r3f later). |
 | `src/index.css` | Tailwind v4 entry + amber-on-black theme tokens (shadcn-compatible). |
 | `src/lib/utils.ts` | `cn()` class-merge helper. |
 | `components.json` | shadcn/ui config; add components with `pnpm dlx shadcn@latest add <name>`. |
@@ -18,7 +25,8 @@ search, and live event updates over WebSocket.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `VITE_API_BASE_URL` | Base URL for the Geos API (`/api/v1`). | `http://localhost:8080` |
+| `VITE_API_BASE_URL` | Optional absolute API URL baked in at build time. Leave unset for same-origin `/api` (Vite dev proxy locally; nginx proxy in Docker). | _(empty — use proxy)_ |
+| `VITE_API_PROXY_TARGET` | Backend URL for the Vite dev server `/api` proxy only (`pnpm dev`). | `http://localhost:8080` |
 
 Copy the root `.env.example` and adjust as needed; Vite only exposes variables
 prefixed with `VITE_`.

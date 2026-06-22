@@ -1,6 +1,8 @@
-//! Events API integration tests (require `DATABASE_URL`).
+//! WebSocket stream integration tests (require `DATABASE_URL` and Meilisearch).
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::time::Duration;
 
 use axum::{
     body::Body,
@@ -8,13 +10,12 @@ use axum::{
     Router,
 };
 use chrono::Utc;
-use geos_api::stream::EventStreamHub;
+use geos_api::stream::{run_event_listener, EventStreamHub};
 use geos_api::{build_router, AppState};
 use geos_core::config::Config;
-use geos_core::db::{connect_pool, run_migrations, upsert_event};
+use geos_core::db::{connect_pool, run_migrations, upsert_event, EventNotifyPayload};
 use geos_core::events::{Category, Event, EventStatus, GeoPoint, Severity, VerificationStatus};
 use geos_core::meili::{self, MeiliClient};
-use geos_core::tenancy::SYSTEM_TENANT_ID;
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -36,11 +37,19 @@ async fn setup() -> Option<AppState> {
     run_migrations(&pool).await.ok()?;
     let meili = MeiliClient::new(&config.meili_url, &config.meili_master_key).ok()?;
     meili::ensure_events_index(meili.client()).await.ok()?;
+
+    let stream = EventStreamHub::default();
+    let listener_url = config.database_url.clone();
+    let listener_tx = stream.publisher();
+    tokio::spawn(async move {
+        run_event_listener(&listener_url, listener_tx).await;
+    });
+
     Some(AppState {
         config,
         pool,
         meili,
-        stream: EventStreamHub::default(),
+        stream,
     })
 }
 
@@ -61,7 +70,7 @@ async fn register_tenant(app: &Router, slug: &str, email: &str) -> Value {
                     serde_json::json!({
                         "email": email,
                         "password": "secure-password-12",
-                        "tenant_name": "Test Org",
+                        "tenant_name": "Stream Org",
                         "tenant_slug": slug,
                     })
                     .to_string(),
@@ -83,29 +92,29 @@ fn sample_event(tenant_id: Uuid, source_event_id: &str) -> Event {
         source_event_id: source_event_id.to_owned(),
         category: Category::Earthquake,
         severity: Severity::Moderate,
-        impact_score: 42,
-        magnitude: Some(4.5),
-        title: Some("Test quake".to_owned()),
+        impact_score: 50,
+        magnitude: Some(4.0),
+        title: Some("Stream test event".to_owned()),
         summary: None,
         body: None,
         original_text: None,
         translated_text: None,
         language: None,
         location: GeoPoint {
-            lon: -122.0,
-            lat: 37.0,
+            lon: -120.0,
+            lat: 38.0,
         },
         affected_area: None,
         country: Some("US".to_owned()),
         region: None,
-        place_name: Some("Testville".to_owned()),
+        place_name: Some("Streamville".to_owned()),
         occurred_at: now,
         detected_at: None,
         ingested_at: now,
         status: EventStatus::Active,
         verification_status: VerificationStatus::Unverified,
-        confidence: 0.9,
-        tags: vec!["test".to_owned()],
+        confidence: 0.7,
+        tags: vec!["stream".to_owned()],
         url: None,
         raw: serde_json::json!({}),
         embedding: None,
@@ -113,84 +122,59 @@ fn sample_event(tenant_id: Uuid, source_event_id: &str) -> Event {
 }
 
 #[tokio::test]
-async fn events_require_auth_and_respect_tenant_isolation() {
+async fn stream_upgrade_requires_auth() {
+    let Some(state) = setup().await else {
+        return;
+    };
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/stream")
+                .header("connection", "Upgrade")
+                .header("upgrade", "websocket")
+                .header("sec-websocket-version", "13")
+                // RFC 6455 example handshake key, not a secret.
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==") // gitleaks:allow
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn upsert_emits_postgres_notify_for_stream_hub() {
     let Some(state) = setup().await else {
         return;
     };
 
     let pool = state.pool.clone();
+    let mut notify_rx = state.stream.subscribe();
     let app = build_router(state);
 
-    let slug_a = format!("tenant-a-{}", Uuid::new_v4().simple());
-    let slug_b = format!("tenant-b-{}", Uuid::new_v4().simple());
-    let auth_a = register_tenant(&app, &slug_a, &format!("a-{slug_a}@example.com")).await;
-    let auth_b = register_tenant(&app, &slug_b, &format!("b-{slug_b}@example.com")).await;
+    let slug = format!("stream-notify-{}", Uuid::new_v4().simple());
+    let auth = register_tenant(&app, &slug, &format!("stream-notify-{slug}@example.com")).await;
+    let tenant_id: Uuid = auth["tenant_id"].as_str().unwrap().parse().unwrap();
 
-    let tenant_a: Uuid = auth_a["tenant_id"].as_str().unwrap().parse().unwrap();
-    let token_a = auth_a["access_token"].as_str().unwrap();
-    let token_b = auth_b["access_token"].as_str().unwrap();
-
-    let event = sample_event(tenant_a, "iso-test-1");
+    let event = sample_event(tenant_id, "notify-test-1");
     let event_id = event.id;
     upsert_event(&pool, &event).await.unwrap();
 
-    let unauth = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/v1/events")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+    let received = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let payload: EventNotifyPayload = notify_rx.recv().await.unwrap();
+            if payload.event_id == event_id {
+                return payload;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for event notification");
 
-    let list_a = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/v1/events")
-                .header("authorization", format!("Bearer {token_a}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(list_a.status(), StatusCode::OK);
-    let list_json = read_json(list_a).await;
-    assert_eq!(list_json["items"].as_array().unwrap().len(), 1);
-
-    let cross_tenant = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!("/api/v1/events/{event_id}"))
-                .header("authorization", format!("Bearer {token_b}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(cross_tenant.status(), StatusCode::NOT_FOUND);
-
-    let system_event = sample_event(SYSTEM_TENANT_ID, "system-only");
-    let system_event_id = system_event.id;
-    upsert_event(&pool, &system_event).await.unwrap();
-
-    let tenant_a_system = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!("/api/v1/events/{system_event_id}"))
-                .header("authorization", format!("Bearer {token_a}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(tenant_a_system.status(), StatusCode::NOT_FOUND);
+    assert_eq!(received.tenant_id, tenant_id);
 }

@@ -45,7 +45,7 @@ pub async fn write(pool: &PgPool, entry: AuditEntry<'_>) -> Result<()> {
         INSERT INTO audit_log (
             tenant_id, actor_user_id, action, resource_type, resource_id,
             context, ip_address, user_agent, request_id
-        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::inet, $8, $9)
         "#,
     )
     .bind(entry.tenant_id)
@@ -54,7 +54,13 @@ pub async fn write(pool: &PgPool, entry: AuditEntry<'_>) -> Result<()> {
     .bind(entry.resource_type)
     .bind(entry.resource_id)
     .bind(entry.context)
-    .bind(entry.request.ip_address.map(|ip| ip.to_string()))
+    .bind(
+        entry
+            .request
+            .ip_address
+            .as_ref()
+            .map(std::net::IpAddr::to_string),
+    )
     .bind(entry.request.user_agent)
     .bind(entry.request.request_id)
     .execute(pool)
