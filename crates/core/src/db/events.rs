@@ -6,6 +6,7 @@ use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 use crate::events::{Category, Event, EventStatus, GeoPoint, Severity, VerificationStatus};
+use crate::tenancy::SYSTEM_TENANT_ID;
 use crate::Result;
 
 /// Geographic bounding box filter (WGS84 degrees).
@@ -21,7 +22,9 @@ pub struct EventBBox {
     pub max_lat: f64,
 }
 
-/// Tenant-scoped list filters. `tenant_id` is always enforced.
+/// Tenant-scoped list filters. Queries return the caller's tenant rows plus
+/// the shared [`SYSTEM_TENANT_ID`] public feeds (USGS, NWS, …); private
+/// per-tenant data stays isolated (`tenant-isolation.mdc`).
 #[derive(Debug, Clone)]
 pub struct EventListFilter {
     /// Authenticated tenant — required on every query.
@@ -294,9 +297,13 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<
             status::text AS status, verification_status::text AS verification_status,
             confidence, tags, url, raw
         FROM events
-        WHERE tenant_id = "#,
+        WHERE tenant_id IN ("#,
     );
+    // Caller's own tenant plus the shared public-feed (system) tenant.
     builder.push_bind(filter.tenant_id);
+    builder.push(", ");
+    builder.push_bind(SYSTEM_TENANT_ID);
+    builder.push(")");
 
     if let Some(bbox) = filter.bbox {
         builder.push(" AND ST_Intersects(location::geometry, ST_MakeEnvelope(");
@@ -348,7 +355,8 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<
         .collect::<Result<Vec<_>>>()
 }
 
-/// Fetch one event by id within a tenant, or `None` if missing / wrong tenant.
+/// Fetch one event by id, visible to the caller's tenant or the shared public
+/// (system) tenant; returns `None` for missing or other tenants' private rows.
 pub async fn get_event(pool: &PgPool, tenant_id: Uuid, event_id: Uuid) -> Result<Option<Event>> {
     let row = sqlx::query_as::<_, EventRow>(
         r#"
@@ -362,12 +370,13 @@ pub async fn get_event(pool: &PgPool, tenant_id: Uuid, event_id: Uuid) -> Result
             status::text AS status, verification_status::text AS verification_status,
             confidence, tags, url, raw
         FROM events
-        WHERE tenant_id = $1 AND id = $2
+        WHERE tenant_id IN ($1, $3) AND id = $2
         LIMIT 1
         "#,
     )
     .bind(tenant_id)
     .bind(event_id)
+    .bind(SYSTEM_TENANT_ID)
     .fetch_optional(pool)
     .await?;
 

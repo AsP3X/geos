@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::events::{Category, Event, Severity};
+use crate::tenancy::SYSTEM_TENANT_ID;
 use crate::Result;
 
 /// Meilisearch index uid for canonical events.
@@ -159,9 +160,13 @@ pub struct SearchFilters {
 }
 
 impl SearchFilters {
-    /// Build the Meilisearch filter expression, always tenant-scoped.
+    /// Build the Meilisearch filter expression. Scoped to the caller's tenant
+    /// plus the shared public-feed (system) tenant; private per-tenant data
+    /// stays isolated (`tenant-isolation.mdc`).
     fn to_expression(&self, tenant_id: Uuid) -> String {
-        let mut clauses = vec![format!("tenant_id = \"{tenant_id}\"")];
+        let mut clauses = vec![format!(
+            "(tenant_id = \"{tenant_id}\" OR tenant_id = \"{SYSTEM_TENANT_ID}\")"
+        )];
         if let Some(category) = self.category {
             clauses.push(format!("category = \"{}\"", category_str(category)));
         }

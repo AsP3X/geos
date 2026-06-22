@@ -1,17 +1,23 @@
+import { useMemo } from "react";
 import { Stars } from "@react-three/drei";
 import { GlobeEarth } from "@/components/globe/GlobeEarth";
 import { GlobeCountryBorders } from "@/components/globe/GlobeCountryBorders";
 import { EventMarkers } from "@/components/globe/EventMarkers";
+import { QuakeHeatLayer } from "@/components/globe/QuakeHeatLayer";
+import { type GlobeLayers, isQuake } from "@/components/globe/layers";
 import type { Event } from "@/types/event";
 
 interface GlobeSceneProps {
   events: Event[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  layers: GlobeLayers;
 }
 
-/** r3f scene graph: starfield, terminator lighting, earth, and event markers. */
-export function GlobeScene({ events, selectedId, onSelect }: GlobeSceneProps) {
+/** r3f scene graph: starfield, terminator lighting, earth, and event layers. */
+export function GlobeScene({ events, selectedId, onSelect, layers }: GlobeSceneProps) {
+  const quakeEvents = useMemo(() => events.filter(isQuake), [events]);
+
   return (
     <>
       <Stars radius={60} depth={40} count={2600} factor={3.4} saturation={0} fade speed={0.4} />
@@ -25,7 +31,10 @@ export function GlobeScene({ events, selectedId, onSelect }: GlobeSceneProps) {
 
       <GlobeEarth />
       <GlobeCountryBorders />
-      <EventMarkers events={events} selectedId={selectedId} onSelect={onSelect} />
+      {layers.quakeHeat ? <QuakeHeatLayer events={quakeEvents} /> : null}
+      {layers.quakeDots ? (
+        <EventMarkers events={quakeEvents} selectedId={selectedId} onSelect={onSelect} />
+      ) : null}
     </>
   );
 }

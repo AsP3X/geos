@@ -9,6 +9,8 @@ import {
   type EventFilters,
   filtersAreActive,
 } from "@/components/filters/filters";
+import { LayersRail } from "@/components/globe/LayersRail";
+import { DEFAULT_LAYERS, type GlobeLayers } from "@/components/globe/layers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConnectorStatus } from "@/hooks/useConnectorStatus";
@@ -70,6 +72,7 @@ export function CommandCenterPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [ingestionOpen, setIngestionOpen] = useState(false);
   const [filters, setFilters] = useState<EventFilters>(DEFAULT_FILTERS);
+  const [layers, setLayers] = useState<GlobeLayers>(DEFAULT_LAYERS);
 
   const {
     connectors,
@@ -97,8 +100,11 @@ export function CommandCenterPage() {
     setAccessToken(token);
     try {
       const response = await listEvents(token, {
-        limit: 100,
-        category: filters.category,
+        limit: 200,
+        // Earthquakes are the implemented globe visualization; weather alerts
+        // (placeholder layer) otherwise dominate the most-recent feed and leave
+        // the quake layers empty. The category filter still overrides this.
+        category: filters.category ?? "earthquake",
         severity: filters.severity,
         minImpact: filters.minImpact,
       });
@@ -190,7 +196,12 @@ export function CommandCenterPage() {
             </div>
           }
         >
-          <GlobeViewport events={events} selectedId={selectedId} onSelect={setSelectedId} />
+          <GlobeViewport
+            events={events}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            layers={layers}
+          />
         </Suspense>
       </div>
 
@@ -272,6 +283,14 @@ export function CommandCenterPage() {
           <ChevronRight size={18} />
         </button>
       )}
+
+      {/* Left-edge visualization layers rail (collapses to squircles). */}
+      <LayersRail
+        layers={layers}
+        onChange={setLayers}
+        side="left"
+        className="left-4 top-1/2 -translate-y-1/2"
+      />
 
       {/* Floating right detail card (collapsible). */}
       {rightOpen ? (

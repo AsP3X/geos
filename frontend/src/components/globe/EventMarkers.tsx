@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { Instance, Instances } from "@react-three/drei";
 import type { ThreeEvent } from "@react-three/fiber";
 import type { Event } from "@/types/event";
@@ -11,7 +11,16 @@ interface EventMarkersProps {
   onSelect: (id: string) => void;
 }
 
-/** Instanced event markers positioned on the globe surface. */
+/**
+ * Relative marker scale derived from impact (0–100). Bigger, higher-impact
+ * events read as larger dots so the globe conveys "where + how significant"
+ * at a glance; a floor keeps minor events tappable.
+ */
+function impactScale(impact: number): number {
+  return 0.65 + (Math.min(Math.max(impact, 0), 100) / 100) * 1.35;
+}
+
+/** Instanced event markers positioned on the globe surface, sized by impact. */
 export function EventMarkers({ events, selectedId, onSelect }: EventMarkersProps) {
   const limit = Math.max(events.length, 1);
 
@@ -23,21 +32,31 @@ export function EventMarkers({ events, selectedId, onSelect }: EventMarkersProps
     [events],
   );
 
+  const setHoverCursor = useCallback((hovering: boolean) => {
+    document.body.style.cursor = hovering ? "pointer" : "";
+  }, []);
+
   if (events.length === 0) {
     return null;
   }
 
   return (
-    <Instances limit={limit} range={events.length}>
-      <sphereGeometry args={[0.028, 10, 10]} />
+    <Instances
+      limit={limit}
+      range={events.length}
+      onPointerOver={() => setHoverCursor(true)}
+      onPointerOut={() => setHoverCursor(false)}
+    >
+      <sphereGeometry args={[0.024, 12, 12]} />
       <meshBasicMaterial toneMapped={false} />
       {events.map((event, index) => {
         const selected = event.id === selectedId;
+        const scale = impactScale(event.impact_score) * (selected ? 1.7 : 1);
         return (
           <Instance
             key={event.id}
             position={positions[index]}
-            scale={selected ? 1.75 : 1}
+            scale={scale}
             color={severityToColor(event.severity)}
             onClick={(clickEvent: ThreeEvent<MouseEvent>) => {
               clickEvent.stopPropagation();

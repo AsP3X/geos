@@ -3,15 +3,17 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import type { Event } from "@/types/event";
 import { GlobeScene } from "@/components/globe/GlobeScene";
+import type { GlobeLayers } from "@/components/globe/layers";
 
 interface GlobeViewportProps {
   events: Event[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  layers: GlobeLayers;
 }
 
 /** Full-bleed react-three-fiber globe with orbit controls and event markers. */
-export function GlobeViewport({ events, selectedId, onSelect }: GlobeViewportProps) {
+export function GlobeViewport({ events, selectedId, onSelect, layers }: GlobeViewportProps) {
   return (
     <div className="relative size-full min-h-full overflow-hidden bg-[#05070d]">
       <Canvas
@@ -21,7 +23,12 @@ export function GlobeViewport({ events, selectedId, onSelect }: GlobeViewportPro
       >
         <color attach="background" args={["#05070d"]} />
         <Suspense fallback={null}>
-          <GlobeScene events={events} selectedId={selectedId} onSelect={onSelect} />
+          <GlobeScene
+            events={events}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            layers={layers}
+          />
         </Suspense>
         <OrbitControls
           enablePan={false}

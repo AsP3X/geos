@@ -49,6 +49,24 @@ async fn read_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body).unwrap()
 }
 
+/// Whether an events list response contains a given event id.
+fn items_contain(json: &Value, id: Uuid) -> bool {
+    let needle = id.to_string();
+    json["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| item["id"].as_str() == Some(needle.as_str()))
+        })
+        .unwrap_or(false)
+}
+
+/// Tight viewport around the remote, aseismic coordinate used by `sample_event`
+/// so list assertions stay deterministic even when the shared system tenant
+/// holds real public-feed events.
+const TEST_BBOX: &str = "min_lon=-25.5&min_lat=-45.5&max_lon=-24.5&max_lat=-44.5&limit=200";
+
 async fn register_tenant(app: &Router, slug: &str, email: &str) -> Value {
     let response = app
         .clone()
@@ -91,9 +109,11 @@ fn sample_event(tenant_id: Uuid, source_event_id: &str) -> Event {
         original_text: None,
         translated_text: None,
         language: None,
+        // Remote, aseismic point in the South Atlantic so tests are not
+        // polluted by real public-feed events in the shared system tenant.
         location: GeoPoint {
-            lon: -122.0,
-            lat: 37.0,
+            lon: -25.0,
+            lat: -45.0,
         },
         affected_area: None,
         country: Some("US".to_owned()),
@@ -152,7 +172,7 @@ async fn events_require_auth_and_respect_tenant_isolation() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/events")
+                .uri(format!("/api/v1/events?{TEST_BBOX}"))
                 .header("authorization", format!("Bearer {token_a}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -161,7 +181,7 @@ async fn events_require_auth_and_respect_tenant_isolation() {
         .unwrap();
     assert_eq!(list_a.status(), StatusCode::OK);
     let list_json = read_json(list_a).await;
-    assert_eq!(list_json["items"].as_array().unwrap().len(), 1);
+    assert!(items_contain(&list_json, event_id));
 
     // min_impact above the sample event's score (42) excludes it.
     let filtered_out = app
@@ -169,7 +189,7 @@ async fn events_require_auth_and_respect_tenant_isolation() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/events?min_impact=90")
+                .uri(format!("/api/v1/events?{TEST_BBOX}&min_impact=90"))
                 .header("authorization", format!("Bearer {token_a}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -178,7 +198,7 @@ async fn events_require_auth_and_respect_tenant_isolation() {
         .unwrap();
     assert_eq!(filtered_out.status(), StatusCode::OK);
     let filtered_json = read_json(filtered_out).await;
-    assert_eq!(filtered_json["items"].as_array().unwrap().len(), 0);
+    assert!(!items_contain(&filtered_json, event_id));
 
     // An out-of-range min_impact is rejected.
     let bad_impact = app
@@ -209,11 +229,13 @@ async fn events_require_auth_and_respect_tenant_isolation() {
         .unwrap();
     assert_eq!(cross_tenant.status(), StatusCode::NOT_FOUND);
 
+    // Shared system-tenant events are public feeds: visible to every tenant.
     let system_event = sample_event(SYSTEM_TENANT_ID, "system-only");
     let system_event_id = system_event.id;
     upsert_event(&pool, &system_event).await.unwrap();
 
     let tenant_a_system = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
@@ -224,5 +246,27 @@ async fn events_require_auth_and_respect_tenant_isolation() {
         )
         .await
         .unwrap();
-    assert_eq!(tenant_a_system.status(), StatusCode::NOT_FOUND);
+    assert_eq!(tenant_a_system.status(), StatusCode::OK);
+    let system_json = read_json(tenant_a_system).await;
+    assert_eq!(
+        system_json["id"].as_str(),
+        Some(system_event_id.to_string().as_str())
+    );
+
+    // The public feed event also surfaces in tenant A's list alongside its own.
+    let combined = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/events?{TEST_BBOX}"))
+                .header("authorization", format!("Bearer {token_a}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(combined.status(), StatusCode::OK);
+    let combined_json = read_json(combined).await;
+    assert!(items_contain(&combined_json, system_event_id));
+    assert!(items_contain(&combined_json, event_id));
 }
