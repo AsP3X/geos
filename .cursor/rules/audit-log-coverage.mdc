@@ -1,0 +1,43 @@
+---
+description: >-
+  Require audit log entries for new/changed mutations and security-sensitive
+  actions in geos-api/workers; checklist before marking work complete
+globs: crates/api/**/*.rs,crates/workers/**/*.rs
+alwaysApply: false
+---
+
+# Audit log coverage (mandatory review)
+
+Semantic user, admin, and operator actions must appear in **`audit_log`**. Structured `tracing` logs record raw request/telemetry only—they are **not** a substitute.
+
+## When you must add or update audit logging
+
+Treat every **new or changed** behavior as an audit candidate if it:
+
+- **Creates, updates, deletes, or archives** data (including bulk ops and manual events)
+- **Changes auth or sessions** (login, logout, register, password reset, MFA enroll/disable, token revoke)
+- **Changes RBAC** (roles, permissions, memberships) or **tenant/plan/quota** settings
+- **Runs operator/super-admin tools** (tenant management, connector enable/disable, backfill triggers, API-key issuance)
+- **Changes verification status** of events (verify / flag false-positive / dispute)
+- **Performs GDPR actions** (data export, erasure) — always audited (`privacy-gdpr.mdc`)
+
+**Usually exempt** (no audit row unless product asks): read-only `GET`/list/detail endpoints, stubs that do not persist, pure `tracing`/metrics.
+
+If unsure, **add audit**—missing rows are harder to fix in production than an extra log line.
+
+## How to implement
+
+- Use the shared audit helper in `crates/core` (e.g. `audit::write(pool, tenant_id, actor_id, action, resource_type, resource_id, context, request_meta)`).
+- Pass request metadata (IP, user-agent, `request_id`) so events are traceable; capture `tenant_id` and `actor_id` (or the platform super-admin id for operator actions).
+- **Action naming:** dotted `{domain}.{verb}` or `{domain}.{subresource}.{verb}` (e.g. `events.create`, `events.verify`, `rbac.role.update`, `operator.tenant.suspend`, `connector.backfill.trigger`).
+- Do **not** put secrets, passwords, tokens, MFA secrets, or full PII in `context`/`message`.
+
+## Agent checklist (before "done")
+
+When your diff touches `crates/api/src/routes/**`, `crates/api/src/auth/**`, operator endpoints, or worker mutation paths:
+
+1. List every **new or modified mutation** (route, operator tool, auth path, worker write).
+2. For each, confirm **audit added or intentionally exempt** (state why if exempt).
+3. Mention audit coverage in the completion summary.
+
+Skipping this review is a defect—the audit log is the compliance trail for who did what, per tenant.

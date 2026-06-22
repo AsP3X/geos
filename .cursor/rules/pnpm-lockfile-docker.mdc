@@ -1,0 +1,39 @@
+---
+description: Frontend pnpm-lock.yaml must be Linux-complete for Docker installs
+globs: frontend/package.json,frontend/pnpm-lock.yaml
+alwaysApply: false
+---
+
+# Frontend pnpm lockfile (Docker / Alpine)
+
+The production frontend image installs dependencies with **pnpm** on a Node Alpine base (`frontend/Dockerfile`). A lockfile produced only on **Windows/macOS** can omit Linux-specific optional dependencies (e.g. native/WASM bindings for Rolldown/Tailwind/oxide or esbuild) and break Compose builds with `ERR_PNPM_OUTDATED_LOCKFILE` or missing-optional-dependency errors.
+
+## Mandatory when changing frontend dependencies
+
+Applies whenever you **add, remove, or bump** packages, or commit changes to `frontend/package.json` or `frontend/pnpm-lock.yaml`.
+
+1. **Do not** commit a host-OS-only lockfile as the final artifact when native/optional deps are involved.
+2. **Regenerate the lockfile inside Alpine** (from repo root) so Linux optional deps resolve:
+
+```bash
+docker run --rm -v "$PWD/frontend:/app" -w /app node:22-alpine sh -c "corepack enable && pnpm install --lockfile-only"
+```
+
+3. **Verify the Docker build** before claiming the change is done:
+
+```bash
+docker build -f frontend/Dockerfile frontend
+```
+
+4. **Sanity-check** the lockfile resolves platform-specific optional packages, not just references.
+
+## Agent checklist (before commit)
+
+- [ ] Lockfile regenerated for Linux (not host-OS-only) when native/optional deps changed.
+- [ ] `docker build -f frontend/Dockerfile frontend` succeeds (install step passes).
+- [ ] `pnpm build` still passes locally if you changed application code.
+
+## Anti-patterns
+
+- Running `pnpm install` on Windows/macOS and committing the lockfile without the Alpine refresh when native deps are present.
+- Skipping Docker verification because install passed on the host OS.

@@ -1,0 +1,35 @@
+---
+description: >-
+  All AI calls go through the provider abstraction—no hardcoded vendors/keys,
+  versioned prompts, air-gap skippable, per-tenant budgets, PII-aware
+globs: "crates/**/*.rs"
+alwaysApply: false
+---
+
+# AI provider abstraction
+
+Geos uses AI for correlation labeling, summaries, translation, classification, entity extraction, and embeddings. All of it goes through one abstraction so the product is provider-agnostic, air-gap capable, and cost-controlled.
+
+## Core rules
+
+- **All AI calls go through the `AiProvider` trait** in `crates/core`. Never call a vendor SDK/HTTP endpoint directly from feature code. Supported backends: Anthropic, OpenAI, and local Ollama, selected via config.
+- **No hardcoded providers, models, endpoints, or API keys.** Read them from config/env (validated at startup). Secrets never appear in code, logs, or the repo (`git-commits.mdc`, `api-error-shape.mdc`).
+- **Versioned prompts.** Prompts and their version live in `crates/core`; changing a prompt is a deliberate, reviewed change (note it in the ADR/commit). This keeps outputs reproducible and debuggable.
+
+## Air-gapped / skippable
+
+- **Every AI step must be skippable** (or routed to local Ollama) so core features run with no outbound internet. Always provide a deterministic, non-AI fallback path (e.g. ingestion still stores events without AI summaries; correlation still runs the geo/temporal/vector stage without LLM labeling).
+- Embeddings must be generatable locally (Ollama) for air-gapped deployments; the embedding dimension must match the pgvector index (`geospatial-postgis.mdc`).
+
+## Cost & abuse control
+
+- **Enforce per-tenant token/cost budgets.** Meter usage into `quota_usage`; refuse or degrade gracefully when a tenant exceeds its plan's AI quota rather than running uncapped spend.
+- Use **caching** (don't re-embed/re-summarize unchanged content) and **batching** for candidate clusters.
+
+## Privacy
+
+- **Never send PII or restricted content to a cloud provider when the tenant/policy forbids it** (`privacy-gdpr.mdc`). Respect per-tenant data-handling settings; prefer local models when content is sensitive. Scrub/avoid secrets in prompts.
+
+## Before "done"
+
+- Confirm the new AI usage routes through `AiProvider`, has a non-AI/offline fallback, respects budgets, and does not leak PII to disallowed providers.

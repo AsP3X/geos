@@ -1,0 +1,13 @@
+---
+alwaysApply: true
+---
+
+# Agent non-negotiables
+
+- Treat rules in `.cursor/rules/` as binding requirements, not suggestions. When a rule conflicts with convenience, speed, or habit, follow the rule.
+- **Geos layout** is a Cargo workspace (`crates/core`, `crates/api`, `crates/workers`, `crates/cli`) plus `frontend/` (React + Vite), root `migrations/` (sqlx + PostGIS), and `nebular-os/` (read-only object-storage submodule). See `project-layout.mdc`. Do not assume paths from other repos (`apps/api`, `apps/web-vite`, `backend/`, Prisma, etc.) unless the user is explicitly porting work.
+- **The canonical `Event` format in `crates/core` is the single source of truth.** Any change to it must follow `canonical-event-schema.mdc`.
+- **Every query and endpoint is tenant-scoped.** Cross-tenant data access is a security bug; see `tenant-isolation.mdc`.
+- **Data-destructive actions must strictly follow `data-safety.mdc`.** Never wipe volumes, databases, migrations, or bulk-delete files without explicit user permission for that specific action.
+- **Git operations must strictly follow `git-commits.mdc` exactly.** If a requested git action is ambiguous (commit/push/merge/rebase intent is not explicit), stop and ask before running the command. Never bypass commit safeguards silently.
+- **Do not mark work complete until `definition-of-done.mdc` is satisfied** with evidence (checks run and green, docs updated).

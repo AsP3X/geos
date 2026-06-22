@@ -1,0 +1,41 @@
+---
+description: >-
+  HTTP error JSON envelope, logging vs client messages, and tracing/request
+  correlation for geos-api and the frontend API client
+globs: crates/api/**/*.rs,crates/core/**/*.rs,frontend/src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# API responses, errors, and logging
+
+Geos's HTTP API contract and observability patterns are **fixed by convention**. Follow them for **`crates/api`** (Rust/Axum), **`crates/core`** (`AppError` definition), and **`frontend/src/api/**`** when parsing or surfacing API failures.
+
+## Canonical error JSON (`/api/v1`)
+
+- **Error HTTP bodies** must be JSON matching the envelope produced by **`AppError`** in `crates/core/src/error.rs`:
+  `{ "error": { "code": string, "message": string, "fields"?: object } }`
+  The status code comes from the same error type (`IntoResponse` on `AppError`).
+- **Handlers** return **`Result<..., AppError>`** (or `Result<Json<...>, AppError>`) and build failures with **`AppError::{unauthorized, forbidden, not_found, bad_request, validation, conflict, rate_limited, ...}`** (or `?` where `From` is implemented). **Do not** introduce alternate error shapes (plain text, ad-hoc `{ "message": ... }`, random keys) on the same API surface unless the user explicitly approves a breaking contract change—and then **update** the frontend error parsing in the same work.
+- **Validation**: use **`AppError::validation(..., fields)`** so `fields` is populated consistently for field-level client display.
+
+## What clients see vs what logs contain
+
+- **Responses**: `message` and `code` must stay **safe for end users**—no stack traces, SQL fragments, internal hostnames, tokens, secrets, or PII in JSON bodies.
+- **Server logs**: use **`tracing`** with enough detail to debug (`error!`/`warn!`/`info!`). For DB/infra failures, **log the real error** (e.g. `{:?}` on the source) in tracing events; map to **generic** safe `AppError` text for the HTTP body (transient vs non-transient).
+- **Do not** log credentials, session tokens, reset links, MFA secrets, or full third-party payloads unless scrubbed. PII handling follows `privacy-gdpr.mdc`.
+
+## Request correlation and structured logs
+
+- The stack builds a **per-request span** from **`x-request-id`** (or a generated UUID) and logs `request_id`, `tenant_id` (when authenticated), method, and URI. **Preserve** this when changing middleware or tracing setup.
+- Prefer **structured fields** (key/value pairs) on tracing events over prose-only messages so JSON log pipelines stay queryable.
+- `LOG_FORMAT` and `LOG_VERBOSITY` env vars control output; do not bypass env-driven logging with ad-hoc `println!` in request paths.
+
+## Frontend client alignment
+
+- The frontend API client (`frontend/src/api/`) assumes the **`error.message`** (and optional **`error.code`**) envelope. If you change the Rust error schema, **update the client's error parsing and `ApiError` consumers** in the same change set.
+
+## Anti-patterns
+
+- Mixing the JSON error envelope with plain-text bodies on the same version prefix.
+- Returning **500** with detailed internal causes in the JSON `message` field.
+- Logging PII at error level in hot paths.

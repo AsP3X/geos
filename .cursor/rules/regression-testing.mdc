@@ -1,0 +1,64 @@
+---
+description: >-
+  Regression testing requirements when adding or changing features—identify
+  affected behavior, run the right checks, add tests, and verify existing flows
+  still work before marking work complete.
+alwaysApply: true
+---
+
+# Regression testing
+
+New features and refactors must **not break existing behavior**. Treat regression protection as part of the feature. This rule supplements `plan-execution.mdc` and `definition-of-done.mdc`: every verification step here must pass (or be explicitly blocked with reason) before declaring work done.
+
+## Mindset
+
+- **Preserve contracts**: HTTP status codes, the `AppError` JSON envelope (`api-error-shape.mdc`), the canonical `Event` shape (`canonical-event-schema.mdc`), tenant scoping (`tenant-isolation.mdc`), RBAC gates, migration behavior, and user-visible globe/search flows must still work—unless the task documents a breaking change and updates all consumers in the same work.
+- **Test the blast radius, not just the diff**: ask what existing paths your change touches (shared `core` helpers, middleware, RBAC, DB/PostGIS/vector queries, shared types, connectors, scoring) and run checks for those areas.
+- **Add a guardrail when you fix a bug**: extend or add a test so the same regression cannot return silently.
+
+## Test inventory (this repo)
+
+| Area | Automated checks | Notes |
+| --- | --- | --- |
+| **API (`crates/api`)** | `cargo test -p geos-api` | Requires `DATABASE_URL` (Postgres+PostGIS). Integration tests cover auth/MFA, tenant isolation, RBAC, events/relations, search, exports. |
+| **Core (`crates/core`)** | `cargo test -p geos-core` | Domain model, canonical schema, impact scoring, error mapping. |
+| **Workers (`crates/workers`)** | `cargo test -p geos-workers` | Connector normalization, dedupe/entity resolution, enrichment, correlation. |
+| **CLI (`crates/cli`)** | `cargo test -p geos-cli` | Add tests when CLI behavior changes. |
+| **Rust quality** | `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` | Run on Rust changes; fix new warnings. |
+| **Frontend (`frontend`)** | `pnpm lint`, `pnpm exec tsc --noEmit`, `pnpm build` | Build + lint catch type/import regressions. |
+| **Frontend e2e** | `pnpm test:e2e` (Playwright) | Exercise critical UI paths (auth, globe load, filter, search). |
+| **Migrations** | startup / `cargo test -p geos-api` | New migrations only (`api-sqlx-migrations.mdc`); verify existing routes still work against migrated schema. |
+
+## Verification matrix (by change type)
+
+Run **all rows that apply**; when in doubt, run the broader set.
+
+| You changed... | Required checks |
+| --- | --- |
+| **API handler, middleware, auth, RBAC, tenant scoping** | Full `cargo test -p geos-api`; add/extend integration test when behavior is HTTP-visible or tenant/permission-gated |
+| **Canonical `Event` / core domain** | `cargo test -p geos-core` + schema-drift check; bump JSON schema + TS types + migration together |
+| **SQL schema or PostGIS/vector queries** | New migration file; API/worker tests; manually verify affected map/list/detail flows if no test yet |
+| **Error responses or status codes** | API tests; confirm frontend client still parses errors |
+| **Connector / ingestion / correlation** | `cargo test -p geos-workers`; verify idempotent upsert + dedupe (`connector-contract.mdc`) |
+| **AI enrichment / provider** | `cargo test -p geos-workers`/`core`; confirm air-gapped/skippable path still works (`ai-provider-abstraction.mdc`) |
+| **Frontend pages, hooks, globe, API client** | `pnpm lint` + `tsc --noEmit` + `pnpm build`; Playwright smoke of login + the changed view + one adjacent flow |
+| **Shared types / config contract** | Rust tests + frontend build; grep consumers and spot-check |
+| **CLI commands** | `cargo test -p geos-cli`; manual run against a dev stack |
+| **Cross-cutting refactor** | Full workspace tests + frontend lint/build + clippy on touched crates |
+
+## Adding regression tests (required unless blocked)
+
+- New API endpoint or changed status/permission/tenant behavior -> integration test.
+- Bug fix where a test would have caught it -> add that test in the same change set.
+- New permission key or role behavior -> verify grant/deny in API tests.
+- Do **not** weaken or delete existing tests to make new code pass without user approval.
+
+## When tests cannot run
+
+- **No Postgres / `DATABASE_URL`**: run `cargo clippy` and frontend lint/build; clearly tell the user which integration tests were not executed and provide the exact command.
+- **Blocked by environment**: document the blocker, run what you can, never imply full coverage.
+- **User explicitly skips tests**: honor only for the current request; still note the risk.
+
+## Report evidence
+
+Name commands run and outcomes (e.g. `cargo test -p geos-api`: 42 passed; `pnpm build`: success). For manual smokes, list paths exercised.

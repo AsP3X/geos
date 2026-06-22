@@ -1,0 +1,33 @@
+---
+description: >-
+  EU/GDPR data-protection foundations—PII tagging, export/erasure, retention,
+  no PII in logs, data residency
+globs: "crates/**/*.rs,frontend/src/**/*.{ts,tsx}"
+alwaysApply: false
+---
+
+# Privacy and GDPR
+
+Geos targets EU customers and ingests public-source data that can contain personal data (especially once social/news sources are added). Build to **follow EU data-protection rules** from the start.
+
+## PII handling
+
+- **Tag PII.** Events/entities that contain personal data (names, faces, contact details, identifiable individuals) must be marked so downstream features (AI, export, retention) can treat them appropriately.
+- **Minimize.** Do not store personal data a source's ToS forbids or that the product does not need (`connector-contract.mdc`).
+- **Never log PII or secrets.** Error bodies and `tracing` logs must not contain personal data, tokens, or credentials (`api-error-shape.mdc`). Scrub before logging.
+- **AI boundaries.** Do not send PII to cloud AI providers when the tenant/policy forbids it; prefer local models (`ai-provider-abstraction.mdc`).
+
+## Data subject rights (must stay functional)
+
+- **Export:** per-tenant data export (GeoJSON/CSV/JSON) must remain working; treat breaking it as a defect.
+- **Erasure:** deletion of personal data happens through the **documented, scoped, audited** data-deletion path—never an ad-hoc bulk `DELETE` (`data-safety.mdc`, `audit-log-coverage.mdc`). Erasure must cascade to derived data (embeddings, search index, media in nebular-os, caches).
+- **Retention:** honor configurable retention/archival settings; expired personal data is removed or anonymized per policy.
+
+## Data residency & lawful basis
+
+- Support an **EU data-residency** deployment option (Postgres, object storage, and any AI processing kept in-region). Do not silently route EU tenant data through non-EU services.
+- Record source **lawful-basis / licensing** notes on `sources` so processing is defensible.
+
+## Before "done"
+
+- For changes touching events/entities/users/media: confirm PII tagging, that export/erasure still cover the new data, retention applies, and nothing leaks PII into logs or disallowed AI calls.

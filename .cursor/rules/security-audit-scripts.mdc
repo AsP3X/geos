@@ -1,0 +1,53 @@
+---
+description: Conventions for standalone security audit scripts under scripts/security-audit/
+globs: scripts/security-audit/**
+alwaysApply: false
+---
+
+# Security audit scripts
+
+When adding or changing files under `scripts/security-audit/`:
+
+## Scope
+
+- **Standalone only** — stdlib Python 3; no imports from `crates/`, `frontend/`, or app code.
+- **One finding per entry script** (e.g. `sec001_tenant_isolation_bypass.py`) with shared code in `lib/`.
+- Map each script to an ID in `docs/security-audit.md` (SEC-001, SEC-002, ...).
+
+## Layout
+
+```
+scripts/security-audit/
+  README.md
+  Makefile
+  sec00N_<short-name>.py    # thin entry: sys.path + lib.audit_main or lib.runner_sec00N
+  lib/
+    constants.py models.py config.py http_client.py redact.py heuristics.py
+    evidence.py report.py compare.py sarif.py
+    runner_sec00N.py audit_main.py
+  tests/
+    test_*.py                 # unittest; no live API required for unit tests
+```
+
+## Behavior
+
+| Requirement | Detail |
+|-------------|--------|
+| **Detection vs display** | Checks use raw HTTP bodies; **default stdout redacts** secrets/PII (`redact_sensitive_text`). Raw output only via `--no-redaction` + `SEC001_I_KNOW=1` in non-TTY CI. |
+| **Exit codes** | `0` ok, `1` vulnerable, `2` inconclusive, `3` baseline compare drift. |
+| **CLI** | `argparse`: `--base-url`, `--json`, `--sarif`, `--quiet`, `--strict`, `--retries`, `--fail-fast`, `--output-file`, baseline flags. |
+| **Env** | `SEC001_*` (or `SEC00N_*`) mirrors flags for Compose/CI. |
+| **Geos focus** | Prioritize Geos-specific risks: cross-tenant data access, RBAC bypass, IDOR on event/relation/media endpoints, auth/MFA flows, API-key/quota abuse, PII leakage in error bodies/logs. |
+| **Remediation** | On FAIL, include a one-line hint pointing to the matching `docs/security-audit.md` section. |
+
+## New audit (SEC-00N)
+
+1. Add finding coverage in `lib/runner_sec00N.py` and routes in `constants.py`.
+2. Add thin `sec00N_*.py` entry script.
+3. Add `tests/test_*` for redaction/heuristics without a running server.
+4. Document in `scripts/security-audit/README.md` and `docs/security-audit.md`.
+
+## Do not
+
+- Commit live credentials, baselines with raw secrets, or disable redaction by default.
+- Import application code or assume internal layout in probe logic (URL prefix via env only).

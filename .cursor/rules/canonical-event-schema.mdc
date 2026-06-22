@@ -1,0 +1,37 @@
+---
+description: >-
+  The canonical Event format in crates/core is the single source of truth;
+  changes must update struct + JSON schema + TS types + migration together
+alwaysApply: true
+---
+
+# Canonical event schema (single source of truth)
+
+Geos stores all ingested data in **one canonical `Event` format**. The Rust definition in `crates/core` is the **single source of truth**; everything else is generated from or aligned to it.
+
+## The invariant
+
+Any change to the canonical `Event` (or its sub-types: relations, entities, enums for category/severity/verification) must update **all four** of these **in the same change set**:
+
+1. The Rust type(s) in `crates/core` (e.g. `core::events::Event`).
+2. The exported **JSON Schema** (`crates/core` emits it; used by frontend/CLI/external consumers).
+3. The generated **TypeScript types** in `frontend/src/types/` (via `scripts/gen-types.sh`).
+4. A new **sqlx migration** in `migrations/` (`api-sqlx-migrations.mdc`).
+
+CI runs a **schema-drift check** that fails if these are out of sync. Do not bypass it.
+
+## Rules
+
+- **No ad-hoc event shapes anywhere.** Connectors normalize into the canonical `Event`; the API serves it; the frontend consumes it; the CLI prints it. Do not introduce parallel structs that partially mirror `Event`.
+- **Connectors map raw -> canonical** and always retain the original payload in `raw` (jsonb). Source-specific fields live in `raw` or typed extension columns, never by forking the canonical type.
+- **Enums are closed and versioned.** Adding a `category`, `severity`, or `verification_status` value requires updating the enum, the DB enum/migration, and any UI legend/filters.
+- **Backward compatibility:** prefer additive changes (nullable columns/fields with defaults). Breaking changes require a documented migration of existing rows and an ADR (`documentation.mdc`).
+- **Identity & dedupe:** events are keyed for idempotency on `source + source_event_id`; cross-source merges produce a canonical event referencing multiple sources (`connector-contract.mdc`). Do not invent alternate identity schemes.
+
+## Required fields (keep aligned with `crates/core`)
+
+`id`, `tenant_id`, `source`, `source_event_id`, `category`, `severity`, `impact_score` (0-100), optional `magnitude`, `title`, `summary`, `body` (+ original/translated text), `location` (PostGIS `geography(Point,4326)`), optional `affected_area`, `country`/`region`/`place_name`, `occurred_at`/`detected_at`/`ingested_at`, `status`, `verification_status`, `confidence`, `tags`, `url`, `raw`, and the `embedding` vector.
+
+## Before "done"
+
+- State which of the four artifacts you changed and confirm the drift check passes (or is blocked with the exact command for the user).

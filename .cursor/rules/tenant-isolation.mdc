@@ -1,0 +1,38 @@
+---
+description: >-
+  Every query and endpoint must be tenant-scoped; cross-tenant access is a
+  security bug; super-admin is a separate guarded path
+globs: "crates/**/*.rs"
+alwaysApply: false
+---
+
+# Tenant isolation (security-critical)
+
+Geos is multi-tenant SaaS. **Every data access is scoped to exactly one tenant** unless it is an explicit, separately-guarded platform-operator action. A cross-tenant read or write is a **security bug**, not a style issue.
+
+## Core rules
+
+- **Always filter by `tenant_id`.** Every `SELECT`/`UPDATE`/`DELETE` against tenant-owned tables (events, relations, entities, saved_filters, areas_of_interest, annotations, api_keys, memberships, media, ...) must include the authenticated tenant. Never rely on the client to send the tenant id as the source of truth—derive it from the authenticated session/token.
+- **Derive tenant from auth context.** The tenant scoping middleware in `crates/api` resolves `tenant_id` from the JWT/session/API key. Handlers take it from that context, not from arbitrary request bodies or path params, unless the value is then re-checked against the caller's membership.
+- **Check object ownership on lookups by id.** Fetching `/events/{id}` must verify the row's `tenant_id` matches the caller's tenant (prevents IDOR). Return `404` (not `403`) for objects in other tenants to avoid leaking existence.
+- **RBAC on top of isolation.** Within a tenant, enforce role/permission checks (Owner/Analyst/Viewer presets + custom permissions) on mutations. Isolation and RBAC are separate gates—both must pass.
+
+## Super-admin / operator path
+
+- Platform operator actions (manage tenants, connectors, quotas) run through a **separate, explicitly super-admin-guarded** code path and are **always audited** (`audit-log-coverage.mdc`).
+- Super-admin is **not** a tenant role and must never be reachable via tenant RBAC. Cross-tenant operator queries must be deliberate, narrow, and logged.
+
+## Shared / global data
+
+- Public reference data (e.g. `geo_reference`, global connector feeds) may be tenant-agnostic, but anything derived per tenant (saved views, annotations, AOIs, quotas) is tenant-scoped. When in doubt, scope it.
+
+## Anti-patterns
+
+- Trusting a `tenant_id` from the request body/query for authorization.
+- A query against a tenant table with no `tenant_id` predicate.
+- Returning `403` (vs `404`) for another tenant's object, leaking existence.
+- Adding a "convenience" cross-tenant list endpoint outside the operator path.
+
+## Before "done"
+
+- For any new/changed query or endpoint, confirm tenant scoping is enforced and add a test that a second tenant cannot read/write the first tenant's data (`regression-testing.mdc`).

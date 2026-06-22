@@ -1,0 +1,31 @@
+---
+description: Docker Compose dev vs prod, no new variants, and volume safety
+alwaysApply: true
+---
+
+# Docker Compose and database safety
+
+Supplements **`data-safety.mdc`** — read both before any Compose or database operation.
+
+## Mandatory for agents
+
+- **Never run `docker compose down -v`** (or `docker volume rm`) unless the user **explicitly** requests destruction of local volumes and confirms data loss is acceptable.
+- **Never assume** the dev Compose Postgres / Meilisearch / nebular-os volumes are disposable. Users may store important data there.
+- Prefer stopping the stack **without** `-v` (`docker compose down`).
+- If volume removal is truly required, require explicit user confirmation naming the volumes first.
+
+## Services (this project)
+
+The dev stack composes: **postgres** (PostGIS + pgvector), **meilisearch**, **object-storage** (built from `./nebular-os`), **api** (`geos-api`), **workers** (`geos-workers`), and **frontend** (Vite). The `object-storage` service builds from the submodule after `git submodule update --init --recursive`.
+
+## Do not create new Compose variants
+
+- **Never add** new `docker-compose*.yml` / `docker-compose*.yaml` files unless the user **explicitly** asks for a new variant by name.
+- **Forbidden without explicit request:** staging, CI, test, override, or environment-specific compose files (e.g. `docker-compose.staging.yml`, `docker-compose.ci.yml`, `docker-compose.override.yml`).
+- **Instead:** change the existing dev/prod compose, use Compose **profiles**, or drive differences with **env vars** (`.env`) and documented `docker compose -f ...` invocations.
+- **Do not** rename `container_name`, project `name`, or network identifiers without **explicit user request**.
+- Production database/storage: managed Postgres (with backups/PITR) and object storage — not throwaway Docker volumes.
+
+## Migrations
+
+- Applied migrations are **immutable**. Production fixes are **new migration files** only — never edit shipped migrations (`api-sqlx-migrations.mdc`).

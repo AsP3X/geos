@@ -1,0 +1,52 @@
+---
+description: >-
+  Mandatory inline comments (human + optional AI-digestible line) on Rust and
+  TypeScript/TSX in this repo
+globs: "**/*.{rs,ts,tsx}"
+alwaysApply: false
+---
+
+# Inline documentation (required)
+
+**Applies to `*.rs`, `*.ts`, and `*.tsx` only** (not `Cargo.toml`, `package.json`, lockfiles, CI, env samples, or other configs unless the user asks).
+
+**All new or modified code in these files must include clean, human-readable inline comments.** Where behavior is non-trivial, **each such comment must also include an `// Agent:` line** (in TSX inside JSX, use `{/* Agent: ... */}`) so Cursor and other agents can parse intent quickly—**unless** that line would be redundant. Documentation is **not optional**.
+
+## What to comment
+
+- **Every non-trivial module, function, hook, or component**: state **purpose** and, where helpful, inputs/outputs or side effects (HTTP handlers, DB queries, PostGIS/vector queries, cache keys, auth/tenant checks, `useEffect` deps, channels/tasks in Rust, connector fetch loops).
+- **Non-obvious logic**: explain **why**, not what the syntax shows. Include edge cases, ordering constraints, or runtime quirks (React Strict Mode double effects, async drop order/cancellation in Rust, r3f render-loop concerns).
+- **Sections in longer files**: short header comments before logical blocks.
+- **Magic numbers, flags, workarounds**: name the intent or link to a design constraint.
+
+## AI-oriented line (when applicable)
+
+**Each inline comment documenting non-trivial behavior must also include one separate dense, agent-digestible line**—omit only when it would add no value.
+
+Fixed prefixes:
+
+- **Rust and TS (outside JSX):** `// Human:` and `// Agent:`
+- **TSX inside JSX:** `{/* Human: ... */}` and `{/* Agent: ... */}` as their own lines
+
+On the **Agent** line, prefer structured phrasing: contracts (pre/post), inputs/outputs, HTTP status paths, DB tables/columns touched, tenant scoping, cache invalidation, env vars read, state mutations, invariants, failure modes.
+
+```ts
+// Human: We reject the upload early if the magic bytes do not match a supported image format.
+// Agent: READS file header bytes; RETURNS 415 on mismatch; WRITES nothing; CALLS validateImageMagicBytes.
+```
+
+```rust
+// Human: We spawn a bounded worker so a burst of jobs cannot exhaust connections.
+// Agent: MUTATES worker pool; REQUIRES semaphore permits; READS config.max_workers; EMITS tasks to channel.
+```
+
+## Style
+
+- Full sentences in the **human** line; the **Agent** line may use compact tokens (`READS`, `WRITES`, `EMITS`, `REQUIRES`, `CALLS`, `HTTP`, `DB`, `TENANT`).
+- Place comments **above** the code they describe (end-of-line only for very short clarifications).
+- In Rust, keep **`///` rustdoc** for public API summaries (required for public items per `documentation.mdc`); use `// Human:` / `// Agent:` for non-trivial implementation details.
+- Keep comments **up to date** when behavior changes—stale comments are treated as bugs.
+
+## Out of scope
+
+- Do not comment trivial pass-through getters. **Do** comment anything another developer (or future you) needs to understand to edit safely.

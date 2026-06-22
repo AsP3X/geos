@@ -1,0 +1,42 @@
+---
+description: >-
+  Geos repo layout—Rust workspace (core/api/workers/cli), React/Vite frontend,
+  PostGIS migrations, nebular-os submodule; where to implement changes by default
+alwaysApply: true
+---
+
+# Geos project layout
+
+**Geos** is a multi-tenant SaaS for ingesting, normalizing, correlating, and visualizing OSINT/public-source events on an interactive 3D globe. Backend, workers, and CLI are Rust; the frontend is React + Vite.
+
+## Directories
+
+| Path | Role |
+|------|------|
+| **`crates/core/`** | Shared Rust crate: canonical `Event` domain model + JSON schema, config, errors (`AppError`), SQLx DB layer, PostGIS/pgvector helpers, `AiProvider` trait, nebular-os storage client, impact scoring. |
+| **`crates/api/`** | Axum HTTP + WebSocket API (`/api/v1`): auth (JWT/argon2/TOTP), tenant scoping, RBAC, events/relations/search/exports endpoints. |
+| **`crates/workers/`** | Ingestion: `Connector` implementations (USGS first, then weather), normalizer, AI enrichment, geocoding/reference mirror, correlation engine, schedulers. |
+| **`crates/cli/`** | ratatui interactive TUI (lazygit/btop-style) for browsing/managing data and running queries. |
+| **`frontend/`** | React + Vite + TypeScript + Tailwind + shadcn/ui + react-three-fiber globe. pnpm-managed. |
+| **`migrations/`** | sqlx migrations (PostGIS + pgvector enabled). Applied at API/worker startup. |
+| **`nebular-os/`** | Git submodule (read-only vendor) — S3-compatible object storage. Never edited here (`nebular-os-vendor.mdc`). |
+| **`scripts/`** | Dev/ops scripts (db, seed, dev, lint, gen-types, backup/restore, submodule init). |
+| **`docs/`** | Project docs incl. `docs/adr/` (Architecture Decision Records). |
+| **Root** | `Cargo.toml` (workspace), `package.json`/`pnpm-workspace.yaml`, `docker-compose.yml`, `lefthook.yml`, `LICENSE`, `README.md`. |
+
+## Where to implement
+
+- **API, auth, RBAC, endpoints, WebSocket:** `crates/api/`.
+- **Ingestion, connectors, enrichment, correlation:** `crates/workers/`.
+- **Domain model, DB access, shared types, AI/storage clients:** `crates/core/`.
+- **Schema changes:** new file in `migrations/` only (`api-sqlx-migrations.mdc`).
+- **UI, globe, client API calls:** `frontend/src/`.
+- **TUI:** `crates/cli/`.
+
+## Crate names
+
+`geos-core`, `geos-api`, `geos-workers`, `geos-cli`. Use these in `cargo` commands (e.g. `cargo test -p geos-api`).
+
+## Package manager
+
+Frontend uses **pnpm**. Prefer pnpm over npm/yarn for installs and scripts.

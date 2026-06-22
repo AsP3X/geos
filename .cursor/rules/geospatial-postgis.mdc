@@ -1,0 +1,47 @@
+---
+description: >-
+  PostGIS + pgvector conventions—SRID 4326, geography vs geometry, spatial and
+  vector indexes, viewport queries, time partitioning
+globs: "crates/**/*.rs,migrations/**/*"
+alwaysApply: false
+---
+
+# Geospatial (PostGIS) and vector conventions
+
+Geos relies on PostGIS for spatial data and pgvector for semantic similarity. Follow these conventions so queries stay correct and fast at scale.
+
+## Coordinate system
+
+- **SRID 4326 (WGS84) everywhere.** Store and accept lon/lat in 4326. Be explicit (`ST_SetSRID(ST_MakePoint(lon, lat), 4326)`); never store geometry with an unknown SRID.
+- **Order is (longitude, latitude)** in PostGIS constructors. Document it at call sites (`inline-documentation.mdc`).
+
+## geography vs geometry
+
+- Use **`geography(Point,4326)`** for event `location` so distance/`ST_DWithin` are in **meters** without manual projection.
+- Use **`geometry(Polygon,4326)`** for `affected_area` and `areas_of_interest` boundaries; cast to geography for metric distance when needed.
+- Be consistent—do not mix raw `geometry` distance (degrees) with geography distance (meters) in the same logic.
+
+## Indexes (required)
+
+- Every spatial column queried by location needs a **GiST** index (`USING gist (location)`).
+- The **`embedding`** vector column needs an **HNSW** index (preferred) or IVFFlat, with a fixed, documented dimension matching the embedding model. Choose the operator class to match the distance metric (e.g. cosine).
+- Time-based queries need a btree on `occurred_at`; tenant-scoped queries need `tenant_id` in composite indexes.
+
+## Time partitioning
+
+- The `events` table is **partitioned monthly by `occurred_at`**. New migrations must create upcoming partitions (or a maintenance routine) and define indexes per partition strategy. Queries should be partition-pruning-friendly (always constrain `occurred_at` when possible).
+
+## Standard query patterns
+
+- **Viewport (bbox) load:** filter with `ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326) && location` (the `&&` index operator), then apply category/severity/impact/time filters and a `LIMIT`/clustering for the zoom level.
+- **Radius / near:** `ST_DWithin(location, $point::geography, $meters)`.
+- **Region membership:** `ST_Within`/`ST_Intersects` against `areas_of_interest` or country polygons.
+- **Semantic similarity:** order by the pgvector distance operator (e.g. `embedding <=> $query_embedding`) with the vector index; combine with geo/time filters for correlation and related-events.
+- **Hybrid search:** Meilisearch for keyword/fuzzy + pgvector for semantic; merge results deliberately, do not duplicate the same ranking logic in two places.
+
+## Anti-patterns
+
+- Computing distances in app code that PostGIS can do (and index).
+- Sequential scans over the full `events` table for map queries (always use the spatial index + bbox + partition constraints).
+- Storing lat/lon as loose floats for spatial logic instead of the geography column.
+- Unbounded vector scans without the HNSW/IVFFlat index.

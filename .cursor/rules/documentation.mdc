@@ -1,0 +1,33 @@
+---
+description: Project-level documentation—ADRs, crate/module docs, OpenAPI, README kept in sync
+alwaysApply: true
+---
+
+# Documentation (project level)
+
+Complements `inline-documentation.mdc` (line/function level) with file-, crate-, and project-level expectations so the codebase stays understandable and sellable.
+
+## Architecture Decision Records (ADRs)
+
+- Significant decisions live in **`docs/adr/`** as short numbered records (`NNNN-title.md`): context, decision, alternatives, consequences.
+- Seed the initial ADRs from the implementation plan's decisions (stack, multi-tenancy, PostGIS+pgvector, canonical event schema, AI provider abstraction, nebular-os storage, licensing).
+- Add a new ADR when making a non-trivial architectural choice or a breaking change to the canonical schema (`canonical-event-schema.mdc`).
+
+## Crate and module docs
+
+- Each library crate's `lib.rs` has a crate-level `//!` doc explaining purpose, key modules, and entry points.
+- **Public items in library crates require rustdoc** (`///`). CI runs `cargo doc` treating missing-docs/broken-links as warnings-as-errors; do not bypass.
+- `frontend/README.md` documents purpose, structure, env vars, and how to run.
+
+## API documentation
+
+- The public API is documented via **OpenAPI**; the spec is generated/derived from the code and **checked in CI for drift** so docs never lag the implementation. Update the spec in the same change as API changes.
+
+## README and runbooks
+
+- The root `README.md` covers setup (Docker Compose, submodule init, env), the dev scripts, and how to run each service. Keep it current when commands or services change.
+- Operational procedures (backup/restore, connector management, air-gapped deployment) are documented under `docs/`.
+
+## Before "done"
+
+- If behavior, API surface, schema, or architecture changed, confirm the matching docs (rustdoc, OpenAPI, README, ADR) were updated in the same change set (`definition-of-done.mdc`).

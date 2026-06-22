@@ -1,0 +1,43 @@
+# Geos git hooks (lefthook) — mechanical enforcement of .cursor/rules quality gates.
+#
+# Setup (once per clone):
+#   1. Install lefthook:  https://github.com/evilmartians/lefthook  (e.g. `brew install lefthook`)
+#   2. Install gitleaks:  https://github.com/gitleaks/gitleaks      (e.g. `brew install gitleaks`)
+#   3. Run: `lefthook install`
+#
+# Commands are gated by `glob` so they only run when matching files are staged
+# (e.g. Rust checks run only when *.rs files are committed). See:
+#   - rust/rust-quality.mdc, rust/no-allow-dead-code.mdc
+#   - frontend-quality.mdc, pnpm-lockfile-docker.mdc
+#   - git-commits.mdc (secrets must never be committed)
+
+pre-commit:
+  parallel: true
+  commands:
+    rust-fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+    rust-clippy:
+      glob: "*.rs"
+      run: cargo clippy --all-targets --all-features -- -D warnings
+    frontend-eslint:
+      root: "frontend/"
+      glob: "*.{ts,tsx}"
+      run: pnpm exec eslint {staged_files}
+    frontend-types:
+      root: "frontend/"
+      glob: "*.{ts,tsx}"
+      run: pnpm exec tsc --noEmit
+    secrets:
+      run: gitleaks protect --staged --redact --no-banner
+
+pre-push:
+  parallel: true
+  commands:
+    rust-test:
+      glob: "*.rs"
+      run: cargo test --workspace
+    frontend-test:
+      root: "frontend/"
+      glob: "*.{ts,tsx}"
+      run: pnpm test --if-present

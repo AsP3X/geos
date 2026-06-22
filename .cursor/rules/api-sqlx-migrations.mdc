@@ -1,0 +1,31 @@
+---
+description: sqlx migrations are immutable once applied; add new numbered files instead of editing old ones
+globs: migrations/**/*
+alwaysApply: false
+---
+
+# sqlx migrations (immutable after apply)
+
+Geos uses **sqlx** migrations under `migrations/` (PostGIS + pgvector enabled). The API and workers run them at startup; the container fails if a migration file's checksum no longer matches `_sqlx_migrations`.
+
+## Rule
+
+**Never edit a migration file that has already been applied** (locally, in Docker, CI, or production)—**unless the user explicitly instructs you to do so**. Schema changes after a migration ships must be a **new** sequentially numbered file (e.g. `0007_add_event_impact_score.sql`).
+
+- **Do:** add `ALTER TABLE ...`, new tables, indexes, partitions, seeds in a new migration.
+- **Do not:** change SQL in already-applied files even for "small" fixes—unless the user clearly asks, and then warn about checksum drift.
+
+Editing an applied migration causes a checksum mismatch and the service exits before serving traffic.
+
+## Geos-specific migration requirements
+
+- The `events` table is **time-partitioned (monthly)**; new partitions and partition-aware indexes must be created consistently (see `geospatial-postgis.mdc`).
+- Spatial columns require **GiST** indexes; vector columns require an **HNSW/IVFFlat** index per `geospatial-postgis.mdc`.
+- Any change touching the canonical `Event` shape must be coordinated per `canonical-event-schema.mdc` (struct + JSON schema + TS types + migration together).
+- Enable required extensions (`postgis`, `vector`) in an early migration; do not assume they pre-exist.
+
+## Agent behavior
+
+1. Check existing files in `migrations/` and pick the **next** number.
+2. Create a new `.sql` file only; leave prior migrations untouched unless the user explicitly instructs editing an applied one.
+3. If the user reports a checksum mismatch, explain the cause and recommend a forward migration (or `sqlx migrate repair` for local dev only)—not rewriting applied history.

@@ -1,0 +1,41 @@
+---
+description: >-
+  All data sources implement the Connector trait—idempotent upserts, rate
+  limiting, raw payload retention, attribution, and ToS compliance
+globs: "crates/workers/**/*.rs"
+alwaysApply: false
+---
+
+# Connector contract
+
+Every external/data source is a **`Connector`** implementation in `crates/workers`. New sources must follow this contract so ingestion stays consistent, idempotent, and legally clean.
+
+## Trait surface
+
+- Implement the shared **`Connector`** trait with both **`fetch_live()`** (recent feed) and **`fetch_historical(range)`** (backfill). The first reference implementation is the USGS earthquake connector; weather is next.
+- Return **raw records**; do not write to the DB from inside fetch. Normalization, enrichment, and persistence are separate pipeline stages.
+
+## Normalization & identity
+
+- Map raw records into the canonical `Event` (`canonical-event-schema.mdc`); **always retain the original payload** in `raw` (jsonb).
+- **Idempotency:** upserts are keyed on **`source + source_event_id`**. Re-running live/backfill must not create duplicates; updates to an existing source event update in place.
+- Participate in **cross-source dedupe/entity resolution** (geo + time + text/vector similarity) so the same real-world event from multiple sources collapses into one canonical event referencing all sources.
+
+## Fetching behavior
+
+- **Rate-limit** every external call to within the source's published limits; use **exponential backoff + retry** on transient failures; never hammer a source on errors.
+- Track progress/cursors in **`connectors_state`** so backfill is resumable and live polling does not refetch everything. Backfill depth/retention come from settings (`api-sqlx-migrations.mdc` / tenant settings).
+- Be resilient to partial/malformed records: skip and log (structured `tracing`) rather than aborting the whole batch.
+
+## Legal & attribution
+
+- **Respect each source's Terms of Service and licensing.** Record the source attribution required for display, and store the source `url`/license metadata on the `sources` row.
+- Do not ingest fields a source's ToS forbids storing; flag PII per `privacy-gdpr.mdc`.
+
+## Air-gapped mode
+
+- Connectors that require outbound internet must be **disable-able** so core features run offline (`ai-provider-abstraction.mdc` covers AI; the local geo_reference mirror covers geocoding). Do not make ingestion of locally-mirrored data depend on a live external call.
+
+## Before "done"
+
+- Add tests for normalization and idempotent upsert (re-ingest yields no duplicates) and for dedupe behavior (`regression-testing.mdc`).

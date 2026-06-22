@@ -1,0 +1,38 @@
+---
+description: Frontend quality—TS strict, no any, no console.log, r3f performance, theme tokens
+globs: "frontend/src/**/*.{ts,tsx}"
+alwaysApply: false
+---
+
+# Frontend quality
+
+Applies to the React + Vite + TypeScript + Tailwind + shadcn/ui frontend, including the react-three-fiber globe.
+
+## TypeScript
+
+- **`strict` mode on.** No `any` (use `unknown` + narrowing, or proper types). No non-null assertions (`!`) to silence the checker—handle the null case.
+- Types for API payloads come from the **generated types** in `frontend/src/types/` (`canonical-event-schema.mdc`); do not hand-redeclare event shapes.
+- `pnpm exec tsc --noEmit` and `pnpm lint` (eslint) must pass; do not disable lint rules inline without justification.
+
+## Hygiene
+
+- **No committed `console.log`/`debugger`** (use a logger or remove). No commented-out dead code.
+- No hardcoded secrets or API base URLs—use env (`import.meta.env`).
+- Keep components focused; colocate hooks; follow the existing structure.
+
+## Theming (command-center aesthetic)
+
+- Use **theme tokens** (Tailwind config / CSS variables for the amber-on-near-black palette) instead of hardcoded hex colors. The blurred/transparent sidebars use the shared backdrop-blur utilities, not ad-hoc styles.
+- Desktop-first, dark theme; build with i18next so strings are translatable (no hardcoded user-facing copy where i18n is expected).
+
+## react-three-fiber / globe performance (perf-critical surface)
+
+- **Dispose** geometries, materials, and textures you create; avoid leaks across re-renders.
+- **Memoize** expensive objects (geometries, shader materials) and avoid recreating them every frame/render; keep heavy work out of the render loop.
+- **Instance** markers (instanced meshes / points) when rendering many events instead of one mesh per event; cluster at low zoom.
+- Do per-frame work in `useFrame` sparingly; avoid setState in the render loop. Drive large data via buffers/attributes, not React state per point.
+- Load event data by **viewport (bbox) + filters** from the API (`geospatial-postgis.mdc`)—do not fetch the whole dataset to the client.
+
+## Before "done"
+
+- `pnpm lint`, `tsc --noEmit`, `pnpm build` pass; Playwright smoke of changed view (`regression-testing.mdc`); globe stays responsive with realistic event counts.

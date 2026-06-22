@@ -1,0 +1,33 @@
+---
+description: Nebular OS is an upstream git submodule — never edit it inside Geos
+alwaysApply: true
+---
+
+# Nebular OS vendor (read-only submodule)
+
+`nebular-os/` is a **git submodule** pointing at [github.com/AsP3X/nebular-os](https://github.com/AsP3X/nebular-os) and provides Geos's S3-compatible object storage for media. Geos records only the **pinned commit**; all storage-service source changes belong in that repository.
+
+## Mandatory for agents
+
+- **Never** create, edit, or delete files under `nebular-os/` in this workspace (including `nebular-os/.cursor/`, tests, Dockerfile, or Rust sources).
+- **Never** run `git add` on paths under `nebular-os/*` except bumping the submodule pointer at `nebular-os` (gitlink only).
+- **Nebular bugs or features:** produce a **unified diff** or **format-patch** for the user, or describe changes for them to apply in `AsP3X/nebular-os`. Do not implement fixes inside this repo's submodule checkout.
+- **Geos integration** (JWT/signing alignment, upload limits, bucket config, Compose env, HTTP client): change **Geos** only — the storage module in `crates/core`, `docker-compose.yml`, `.env.example` — not Nebular source.
+
+## Bumping the dependency
+
+After the user merges work upstream:
+
+```bash
+cd nebular-os && git fetch && git checkout <tag-or-sha>
+cd .. && git add nebular-os && git commit -m "CHORE: Bump nebular-os to <tag-or-sha>"
+```
+
+## Clone / CI
+
+```bash
+git clone --recurse-submodules <geos-url>
+# or: git submodule update --init --recursive
+```
+
+Docker Compose builds the `object-storage` service from `./nebular-os` after the submodule is initialized.

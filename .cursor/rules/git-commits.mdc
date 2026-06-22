@@ -1,0 +1,126 @@
+---
+description: >-
+  Git commits only on explicit user request; TASK/FIX/BUGFIX/DOCS/CHORE message
+  format; branch model (master, dev, feature/*); staging, safety, hooks, push,
+  merge/revert exceptions; dev->master only via compatible PR.
+alwaysApply: true
+---
+
+# Git commits
+
+## Enforcement (strict)
+
+- This rule is **mandatory** for all agent-authored git actions in this repository.
+- If a git command would violate any section below, **do not run it**. Stop, explain the exact rule conflict, and ask for explicit user confirmation or clarification.
+- When multiple instructions exist, prefer the **most restrictive** interpretation that keeps history safe and intentional.
+
+## When commits are allowed
+
+- **Create a git commit only when the user explicitly asks** (e.g. "commit this", "make a commit", "git commit"). Phrases like "save my work" or "checkpoint" count as explicit only if they clearly mean a **git commit**—when in doubt, **ask** before committing.
+- **Do not commit** to "helpfully" save progress, to finish a task, or because a change set "feels done." **Never** run `git commit` without a clear, direct request to commit.
+- **Do not** amend, rebase, or otherwise rewrite history unless the user explicitly asks.
+
+## Push and branches
+
+- **Do not** `git push` (or force-push) unless the user **explicitly** asks to push.
+- **Do not** merge or rebase branches unless the user **explicitly** asks (same spirit as commits).
+
+### Branch model (this project)
+
+| Branch | Role |
+|--------|------|
+| **`master`** | **Root / release line.** Stable, production-ready history. Does **not** receive direct feature work. Updates from **`dev`** follow the **`dev` -> `master`** subsection below (compatibility + pull request). |
+| **`dev`** | **Integration branch.** Collects completed work from **feature** branches. Merge feature branches into `dev` only after **checking compatibility** with current `dev` (build runs, conflicts resolved, smoke test as the user defines). |
+| **`feature/<name>`** | **Feature development.** One branch per feature or task slice (e.g. `feature/usgs-connector`, `feature/globe-heatmap`). Open from up-to-date **`dev`**, implement, then merge into **`dev`** when ready—not directly into `master`. |
+
+**Intended flow:** `feature/...` -> **`dev`** (integrate & verify) -> **`master`** (release). Hotfixes from `master` are **out of scope** unless the user explicitly asks.
+
+### `dev` -> `master` (release only when compatible + pull request)
+
+- **`dev` may be merged into `master` only when both are true:** (1) **`dev` is compatible**—build succeeds, conflicts resolved, and any checks the user cares about (tests, CI, smoke paths) have been satisfied; (2) the integration happens through a **pull request** (`dev` -> `master`) on the hosting platform, reviewed and merged there—not as an informal local-only merge by default.
+- **Agent behavior:** Do **not** run or recommend `git checkout master && git merge dev` as the **normal** release path. Tell the user to **open and complete a PR** from `dev` into `master` after compatibility is confirmed. A **local** merge is acceptable **only** if the user **explicitly** asks **and** states the **PR has already been merged** on the remote, **or** that they waive PR for this repo and confirm **compatibility**—when in doubt, **ask**.
+- **No remote / no PR host:** `dev` -> `master` still requires an **explicit user request** plus **stated compatibility**; never merge silently.
+
+**Agent defaults when the user asks for a new branch:** create **`feature/<short-descriptive-slug>`** from **`dev`** unless the user specifies another name or base.
+
+## Staging scope
+
+- **Stage only** paths the user named, or changes that clearly belong to the requested commit. If the working tree has **other** modified or untracked files, **list them** and either leave them unstaged or **ask**—**do not** silently `git add -A` unless the user explicitly asked to commit **everything**.
+- Before committing, prefer **`git status`** so staged vs unstaged is intentional.
+
+## One logical change per commit
+
+- Prefer **one coherent story** per commit. If the working tree mixes unrelated changes, **tell the user** and offer **split commits** or **ask** which single prefix and scope they want.
+
+## Safety (never commit)
+
+- **Secrets:** Do not commit API keys, passwords, tokens, private keys, or full `.env` files. If such material appears staged, **stop**, warn, and remove it from the index before proceeding.
+- **Generated and ignored artifacts:** Do not add build output or cache (`target/`, `node_modules/`, `dist/`, coverage) or paths in `.gitignore` unless the user **explicitly** asks to track them.
+- **Submodule:** Do not `git add` paths under `nebular-os/*` except bumping the submodule pointer (gitlink); see `nebular-os-vendor.mdc`.
+
+## Hooks
+
+- **Do not** bypass Git hooks with `--no-verify` / `-n` unless the user **explicitly** asks to skip hooks for that commit. Hooks (lefthook) enforce `cargo fmt`, clippy, eslint, type-check, and secret scanning.
+
+---
+
+## Commit message structure (required)
+
+For any commit **authored by the agent** with a custom message, use the shape below. **Exception:** commits created by **`git merge`** or **`git revert`** may keep **Git's default message**.
+
+### Message shape
+
+1. **First line:** exactly one required prefix below, colon, space, then a short summary (~72 characters or fewer).
+2. **Blank line** after the first line when there is more to say.
+3. **Body:** optional paragraphs with detail. Match depth to change size.
+
+Every such message must begin with **exactly one** of:
+
+- **`TASK: `** — New work or refactors (behavior, structure, features); not mainly a defect repair, not docs-only, not tooling-only.
+- **`FIX: `** — Correcting something that broke because of an **earlier intentional change** (regression).
+- **`BUGFIX: `** — Fixing a **bug** not introduced solely by the immediately previous change (logic error, edge case, framework misuse).
+- **`DOCS: `** — **Documentation-only** changes (README, `docs/`, ADRs, guide comment blocks). Not for normal inline comments accompanying code—those stay with `TASK:`.
+- **`CHORE: `** — **Tooling and maintenance** only (CI, `.gitignore`, editor/Cursor config, formatting config, dependency bumps, hygiene).
+
+## Which prefix? (when in doubt)
+
+- Only docs/guides changed? -> **`DOCS:`**
+- Only CI/ignore/config housekeeping? -> **`CHORE:`**
+- Regression from the last intentional change? -> **`FIX:`**
+- Pre-existing wrong behavior or latent bug? -> **`BUGFIX:`**
+- Feature/refactor/product change? -> **`TASK:`**
+- Mixed unrelated edits? -> **split commits** or **ask**.
+
+## Format examples
+
+```text
+TASK: Add USGS earthquake connector with historical backfill.
+
+Implements the Connector trait, upserts on source+source_event_id, and
+indexes normalized events in Meilisearch.
+```
+
+```text
+BUGFIX: Globe markers misplaced near the antimeridian.
+
+Wrap longitude before projecting to sphere coords; add regression test.
+```
+
+```text
+DOCS: Document local dev stack and pnpm scripts in README.
+```
+
+```text
+CHORE: Add lefthook hooks for fmt, clippy, eslint, and gitleaks.
+```
+
+## Rules summary
+
+1. **No commit** without explicit request; **no push/merge/rebase** unless explicitly asked.
+2. **Branches:** `master` (release), `dev` (integration), `feature/<name>` (from `dev`); flow feature -> dev -> master; `dev` -> `master` only when compatible and via PR.
+3. **Staging:** only what belongs; surface unrelated dirty files; avoid `git add -A` without explicit "commit everything".
+4. **One logical change** per commit; offer splits or ask if mixed.
+5. **Safety:** no secrets; no generated artifacts; no submodule internals.
+6. **Hooks:** no `--no-verify` unless explicitly asked.
+7. **Messages** start with `TASK:`/`FIX:`/`BUGFIX:`/`DOCS:`/`CHORE:`.
+8. **Merge/revert** commits may use Git's default message.
