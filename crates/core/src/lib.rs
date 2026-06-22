@@ -12,6 +12,7 @@
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod impact;
 pub mod rbac;
 pub mod tenancy;
 
@@ -80,5 +81,13 @@ mod tests {
         assert_eq!(owner.len(), rbac::Permission::ALL.len());
         assert!(viewer.iter().all(|p| analyst.contains(p)));
         assert!(analyst.iter().all(|p| owner.contains(p)));
+    }
+
+    #[test]
+    fn earthquake_impact_scales_with_magnitude() {
+        let (low, _) = impact::earthquake_magnitude(3.0);
+        let (high, sev) = impact::earthquake_magnitude(7.5);
+        assert!(high > low);
+        assert_eq!(sev, events::Severity::Critical);
     }
 }

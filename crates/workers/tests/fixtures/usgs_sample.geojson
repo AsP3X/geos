@@ -1,0 +1,32 @@
+{
+  "type": "FeatureCollection",
+  "metadata": {
+    "generated": 1710000000000,
+    "count": 1,
+    "title": "USGS Sample Feed"
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "id": "us7000example",
+      "properties": {
+        "mag": 4.5,
+        "place": "10 km NE of San Francisco, CA",
+        "time": 1710000000000,
+        "updated": 1710003600000,
+        "tz": null,
+        "url": "https://earthquake.usgs.gov/earthquakes/eventpage/us7000example",
+        "detail": "https://earthquake.usgs.gov/fdsnws/event/1/query?eventid=us7000example&format=geojson",
+        "status": "reviewed",
+        "magType": "mw",
+        "type": "earthquake",
+        "title": "M 4.5 - 10 km NE of San Francisco, CA",
+        "tsunami": 0
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-122.4194, 37.7749, 10.0]
+      }
+    }
+  ]
+}

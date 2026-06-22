@@ -10,6 +10,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Tenant that owns globally ingested public connector feeds (shared OSINT).
+///
+/// Not a customer organization; events from public connectors (USGS, weather,
+/// …) are stored under this tenant until per-tenant private sources exist.
+pub const SYSTEM_TENANT_ID: Uuid = uuid::uuid!("00000000-0000-4000-8000-000000000001");
+
 /// Lifecycle status of a tenant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
