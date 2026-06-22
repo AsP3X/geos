@@ -8,16 +8,18 @@ use geos_core::meili::MeiliClient;
 use geos_core::Result;
 use tracing::{error, info, warn};
 
-use crate::connector::UsgsEarthquakeConnector;
+use crate::connector::{NwsWeatherConnector, UsgsEarthquakeConnector};
 use crate::ingest;
 
-use super::kinds::INGEST_USGS_LIVE;
+use super::kinds::{INGEST_NWS_LIVE, INGEST_USGS_LIVE};
 use super::scheduler::Shutdown;
 
 /// Shared dependencies for task handlers (connectors, clients, etc.).
 pub struct WorkerRuntime {
     /// USGS earthquake connector instance.
     pub usgs: UsgsEarthquakeConnector,
+    /// NWS weather alerts connector instance.
+    pub nws: NwsWeatherConnector,
     /// Meilisearch client for post-upsert indexing.
     pub meili: Option<MeiliClient>,
 }
@@ -27,6 +29,7 @@ impl WorkerRuntime {
     pub fn new(meili: Option<MeiliClient>) -> Self {
         Self {
             usgs: UsgsEarthquakeConnector::new(),
+            nws: NwsWeatherConnector::new(),
             meili,
         }
     }
@@ -107,7 +110,7 @@ async fn claim_and_run(pool: &PgPool, worker_id: &str, runtime: &WorkerRuntime) 
 async fn execute_task(pool: &PgPool, runtime: &WorkerRuntime, task: &WorkerTask) -> Result<()> {
     match task.task_type.as_str() {
         INGEST_USGS_LIVE => {
-            let stats = ingest::ingest_usgs_live(
+            let stats = ingest::ingest_connector_live(
                 pool,
                 &runtime.usgs,
                 task.tenant_id,
@@ -116,6 +119,18 @@ async fn execute_task(pool: &PgPool, runtime: &WorkerRuntime, task: &WorkerTask)
             .await
             .map_err(|err| geos_core::AppError::internal(err.to_string()))?;
             info!(?stats, task_id = %task.id, "USGS live ingest finished");
+            Ok(())
+        }
+        INGEST_NWS_LIVE => {
+            let stats = ingest::ingest_connector_live(
+                pool,
+                &runtime.nws,
+                task.tenant_id,
+                runtime.meili.as_ref(),
+            )
+            .await
+            .map_err(|err| geos_core::AppError::internal(err.to_string()))?;
+            info!(?stats, task_id = %task.id, "NWS live ingest finished");
             Ok(())
         }
         other => Err(geos_core::AppError::internal(format!(
@@ -130,8 +145,9 @@ mod tests {
     use crate::connector::Connector;
 
     #[test]
-    fn worker_runtime_default_has_usgs_connector() {
+    fn worker_runtime_default_has_connectors() {
         let runtime = WorkerRuntime::default();
         assert_eq!(runtime.usgs.source_key(), "usgs");
+        assert_eq!(runtime.nws.source_key(), "nws");
     }
 }

@@ -1,5 +1,6 @@
 //! Shared [`Connector`] trait and ingestion error types (`connector-contract.mdc`).
 
+mod nws;
 mod usgs;
 
 use async_trait::async_trait;
@@ -7,10 +8,14 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use thiserror::Error;
 
+pub use nws::NwsWeatherConnector;
 pub use usgs::UsgsEarthquakeConnector;
 
 /// Stable source key for idempotency (`source + source_event_id`).
 pub const USGS_SOURCE: &str = "usgs";
+
+/// NOAA/NWS active weather alerts source key.
+pub const NWS_SOURCE: &str = "nws";
 
 /// Inclusive UTC window for historical backfill fetches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

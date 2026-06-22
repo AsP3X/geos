@@ -8,19 +8,28 @@ use geos_core::tenancy::SYSTEM_TENANT_ID;
 use geos_core::Result;
 use tracing::{debug, info};
 
-use super::kinds::{ingest_dedupe_key, ingest_usgs_live_payload, INGEST_USGS_LIVE};
+use super::kinds::{ingest_dedupe_key, ingest_live_payload, INGEST_NWS_LIVE, INGEST_USGS_LIVE};
+use crate::connector::{NWS_SOURCE, USGS_SOURCE};
 
 /// Default interval between scheduler enqueue attempts for live polls.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Enqueue the initial USGS live ingest task if none is already pending/running.
+/// Enqueue initial live ingest tasks if none are already pending/running.
 pub async fn bootstrap_tasks(pool: &PgPool) -> Result<()> {
-    let inserted = enqueue_usgs_live(pool, Utc::now()).await?;
-    if inserted.is_some() {
+    let usgs = enqueue_usgs_live(pool, Utc::now()).await?;
+    if usgs.is_some() {
         info!("bootstrapped USGS live ingest task");
     } else {
         debug!("USGS live ingest task already queued");
     }
+
+    let nws = enqueue_nws_live(pool, Utc::now()).await?;
+    if nws.is_some() {
+        info!("bootstrapped NWS live ingest task");
+    } else {
+        debug!("NWS live ingest task already queued");
+    }
+
     Ok(())
 }
 
@@ -46,6 +55,7 @@ pub async fn run_scheduler_loop(pool: PgPool, interval: Duration, shutdown: Shut
 
 async fn enqueue_due_connector_tasks(pool: &PgPool) -> Result<()> {
     enqueue_usgs_live(pool, Utc::now()).await?;
+    enqueue_nws_live(pool, Utc::now()).await?;
     Ok(())
 }
 
@@ -53,13 +63,29 @@ async fn enqueue_usgs_live(
     pool: &PgPool,
     run_at: chrono::DateTime<Utc>,
 ) -> Result<Option<uuid::Uuid>> {
-    let dedupe_key = ingest_dedupe_key(INGEST_USGS_LIVE, crate::connector::USGS_SOURCE);
+    enqueue_live_ingest(pool, INGEST_USGS_LIVE, USGS_SOURCE, run_at).await
+}
+
+async fn enqueue_nws_live(
+    pool: &PgPool,
+    run_at: chrono::DateTime<Utc>,
+) -> Result<Option<uuid::Uuid>> {
+    enqueue_live_ingest(pool, INGEST_NWS_LIVE, NWS_SOURCE, run_at).await
+}
+
+async fn enqueue_live_ingest(
+    pool: &PgPool,
+    task_type: &str,
+    source_key: &str,
+    run_at: chrono::DateTime<Utc>,
+) -> Result<Option<uuid::Uuid>> {
+    let dedupe_key = ingest_dedupe_key(task_type, source_key);
     db::enqueue_task(
         pool,
         EnqueueTask {
             tenant_id: SYSTEM_TENANT_ID,
-            task_type: INGEST_USGS_LIVE,
-            payload: ingest_usgs_live_payload(),
+            task_type,
+            payload: ingest_live_payload(source_key),
             dedupe_key: &dedupe_key,
             run_at,
             priority: 0,

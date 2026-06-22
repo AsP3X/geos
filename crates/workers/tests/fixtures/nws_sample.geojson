@@ -1,0 +1,41 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.1234567890.0.1234567890",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-122.5, 37.7],
+            [-122.3, 37.7],
+            [-122.3, 37.9],
+            [-122.5, 37.9],
+            [-122.5, 37.7]
+          ]
+        ]
+      },
+      "properties": {
+        "id": "urn:oid:2.49.0.1.840.0.1234567890.0.1234567890",
+        "type": "Feature",
+        "areaDesc": "San Francisco Bay Area; California",
+        "sent": "2024-06-15T18:00:00+00:00",
+        "effective": "2024-06-15T18:00:00+00:00",
+        "onset": "2024-06-15T20:00:00+00:00",
+        "expires": "2024-06-16T06:00:00+00:00",
+        "status": "Actual",
+        "messageType": "Alert",
+        "category": "Met",
+        "severity": "Severe",
+        "certainty": "Likely",
+        "urgency": "Expected",
+        "event": "Winter Storm Warning",
+        "headline": "Winter Storm Warning issued June 15 until June 16",
+        "description": "Heavy snow expected. Total snow accumulations of 6 to 12 inches.",
+        "instruction": "Slow down and use caution while traveling.",
+        "senderName": "NWS San Francisco CA"
+      }
+    }
+  ]
+}

@@ -5,7 +5,7 @@ use geos_core::meili::{self, MeiliClient};
 use geos_core::AppError;
 use tracing::warn;
 
-use crate::connector::{Connector, ConnectorError, UsgsEarthquakeConnector, USGS_SOURCE};
+use crate::connector::{Connector, ConnectorError, UsgsEarthquakeConnector};
 use crate::normalizer::normalize_record;
 
 /// Outcome counters for one ingestion pass.
@@ -30,13 +30,14 @@ pub enum IngestError {
     Core(#[from] AppError),
 }
 
-/// Fetch the USGS live feed, normalize each feature, and upsert idempotently.
-pub async fn ingest_usgs_live(
+/// Fetch a connector live feed, normalize each record, and upsert idempotently.
+pub async fn ingest_connector_live(
     pool: &PgPool,
-    connector: &UsgsEarthquakeConnector,
+    connector: &dyn Connector,
     tenant_id: uuid::Uuid,
     meili: Option<&MeiliClient>,
 ) -> Result<IngestStats, IngestError> {
+    let source_key = connector.source_key();
     let records = connector.fetch_live().await?;
     let mut stats = IngestStats {
         fetched: records.len(),
@@ -51,7 +52,7 @@ pub async fn ingest_usgs_live(
                     source = %record.source,
                     source_event_id = %record.source_event_id,
                     error = %err,
-                    "skipping malformed USGS record"
+                    "skipping malformed connector record"
                 );
                 stats.skipped += 1;
                 continue;
@@ -62,7 +63,7 @@ pub async fn ingest_usgs_live(
             warn!(
                 source_event_id = %event.source_event_id,
                 error = %err,
-                "skipping USGS record after upsert failure"
+                "skipping record after upsert failure"
             );
             stats.skipped += 1;
             continue;
@@ -81,6 +82,16 @@ pub async fn ingest_usgs_live(
         }
     }
 
-    touch_live_run(pool, tenant_id, USGS_SOURCE).await?;
+    touch_live_run(pool, tenant_id, source_key).await?;
     Ok(stats)
+}
+
+/// Fetch the USGS live feed, normalize each feature, and upsert idempotently.
+pub async fn ingest_usgs_live(
+    pool: &PgPool,
+    connector: &UsgsEarthquakeConnector,
+    tenant_id: uuid::Uuid,
+    meili: Option<&MeiliClient>,
+) -> Result<IngestStats, IngestError> {
+    ingest_connector_live(pool, connector, tenant_id, meili).await
 }

@@ -22,3 +22,49 @@ pub fn earthquake_magnitude(magnitude: f64) -> (u8, Severity) {
     };
     (score, severity)
 }
+
+/// Compute `(impact_score, severity)` for an NWS alert from severity and urgency.
+pub fn nws_alert(severity: Option<&str>, urgency: Option<&str>) -> (u8, Severity) {
+    let base = match severity {
+        Some("Extreme") => 90,
+        Some("Severe") => 75,
+        Some("Moderate") => 50,
+        Some("Minor") => 25,
+        _ => 15,
+    };
+
+    let urgency_boost = match urgency {
+        Some("Immediate") => 10,
+        Some("Expected") => 5,
+        _ => 0,
+    };
+
+    let score = (base + urgency_boost).min(100);
+    let severity = match score {
+        s if s >= 85 => Severity::Critical,
+        s if s >= 65 => Severity::High,
+        s if s >= 40 => Severity::Moderate,
+        s if s >= 20 => Severity::Low,
+        _ => Severity::Info,
+    };
+    (score, severity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nws_extreme_immediate_is_critical() {
+        let (score, severity) = nws_alert(Some("Extreme"), Some("Immediate"));
+        assert_eq!(score, 100);
+        assert_eq!(severity, Severity::Critical);
+    }
+
+    #[test]
+    fn nws_severe_fixture_maps_high() {
+        let (score, severity) = nws_alert(Some("Severe"), Some("Expected"));
+        assert_eq!(score, 80);
+        assert_eq!(severity, Severity::High);
+    }
+}
