@@ -3,7 +3,10 @@ name: Geos OSINT Globe
 overview: "Build \"Geos\": a multi-tenant SaaS for ingesting, normalizing, correlating, and visualizing OSINT/public-source events (earthquakes, incidents, alerts, weather, news, conflict) on an interactive 3D globe — with a Rust backend/workers/CLI and a React + react-three-fiber frontend."
 todos:
   - id: scaffold
-    content: "Scaffold Cargo workspace (crates/core, api, workers, cli), pnpm frontend, nebular-os git submodule (object storage), docker-compose (postgres+postgis+pgvector, meilisearch, object-storage from ./nebular-os), root LICENSE (Nebular OS Private Non-Commercial v1.0), and copy/adapt .cursor/rules from ownly, cloudwrkz, aurora incl. nebular-os-vendor.mdc (dedupe, take most complete versions, add Geos project-layout.mdc)"
+    content: "Scaffold Cargo workspace (crates/core, api, workers, cli), pnpm frontend, nebular-os git submodule (object storage), docker-compose (postgres+postgis+pgvector, meilisearch, object-storage from ./nebular-os), root LICENSE (Nebular OS Private Non-Commercial v1.0), and lefthook git hooks (fmt/clippy/eslint/tsc/gitleaks) wired so enforcement exists from commit #1"
+    status: pending
+  - id: rules-enforcement
+    content: "Build the Geos .cursor/rules framework (Section 16): copy + adapt rules from ownly/cloudwrkz/aurora to Geos paths (crates/*, frontend, nebular-os), fix glob scoping, dedupe; add new rules (canonical-event-schema, tenant-isolation, geospatial-postgis, connector-contract, ai-provider-abstraction, privacy-gdpr, rust/rust-quality, frontend-quality, definition-of-done, documentation); add CI drift checks (OpenAPI + canonical schema) and cargo doc missing-docs gate"
     status: pending
   - id: core-schema
     content: "Implement core crate: canonical Event model + JSON schema (incl. impact_score 0-100, severity tier, verification_status), config, errors, SQLx DB layer + PostGIS+pgvector migrations with monthly time-partitioned events (embedding + original/translated text), event_relations, entities/event_entities, sources (reliability rating, incl. manual source), connectors_state, tenants, plans/tenant_plan/quota_usage, areas_of_interest (PostGIS), users, memberships, roles/permissions/role_permissions, super_admins, api_keys, mfa_secrets, password_reset_tokens, email_verification_tokens, audit_log, geo_reference, event_annotations, saved_filters, media refs, PII tags; settings (backfill/retention), versioned impact-scoring logic, GDPR data export/erasure helpers, AiProvider trait incl. embeddings + per-tenant budgets/caching (Anthropic/OpenAI/Ollama), nebular-os storage client"
@@ -149,7 +152,7 @@ Supporting tables: `event_relations` (from_event, to_event, relation_type, score
 - Stack: Vite, TypeScript, Tailwind, shadcn/ui, zustand/react-query for state.
 
 ## 9. Cursor rules to copy (then adjust for Geos)
-Copy these files into `geos/.cursor/rules/` in full, then adapt wording to Geos. Where the same rule exists in multiple repos, take the most complete version and merge (notably `git-commits.mdc`: cloudwrkz is the largest). De-duplicate overlaps; keep one canonical copy per rule plus project-specific ones.
+Copy these files into `geos/.cursor/rules/` in full, then adapt wording to Geos. Where the same rule exists in multiple repos, take the most complete version and merge (notably `git-commits.mdc`: cloudwrkz is the largest). De-duplicate overlaps; keep one canonical copy per rule plus project-specific ones. See Section 16 for the full adaptation list, the new Geos-specific rules, and the enforcement strategy (hooks + CI) that makes these rules mechanically checked rather than advisory.
 
 From `[ownly/.cursor/rules](../ownly/.cursor/rules)`:
 - [agent.mdc](../ownly/.cursor/rules/agent.mdc)
@@ -248,3 +251,32 @@ Scaffold workspace + Docker + rules -> core crate + canonical schema + migration
 - Per-tenant AI controls: token/cost budgets per tenant with enforcement, plus response caching and request batching to control spend. Usage metered into `quota_usage` and surfaced in the operator console.
 - Privacy / compliance (EU GDPR): bake in foundations and follow EU data protection rules. Includes per-tenant data export and deletion (right to access / erasure), PII tagging on events/entities, configurable retention, lawful-basis/consent notes for sources, data-processing/audit trail, and EU-region data residency as a deployment option. Especially relevant once social/PII-bearing sources are added.
 - Branding/theme: product name "Geos"; amber/orange accent on near-black (tactical/alert command-center palette). Drives Tailwind theme tokens and globe color accents.
+
+## 16. Cursor rules and enforcement
+The copied rules (Section 9) are content-strong but advisory and shaped for cloudwrkz/ownly/aurora paths. To guarantee quality, readability, functionality, and documentation, Geos pairs every rule with mechanical enforcement and adds product-specific rules.
+
+### 16.1 Enforcement mechanisms (rules must be machine-checked, not just stated)
+- Git hooks via lefthook (`lefthook.yml`): pre-commit runs `cargo fmt --check`, `cargo clippy -- -D warnings` (touched crates), `eslint` + `tsc --noEmit` (frontend), and secret scanning (gitleaks) on staged files; pre-push runs the relevant `cargo test`/`pnpm test`. Hooks installed in the `scaffold` task so enforcement exists from commit #1.
+- CI gates mirror the hooks 1:1 plus: full test suites, `cargo doc` (warn-as-error on missing public docs), OpenAPI drift check, and the canonical-schema drift check (16.3). A rule without a backing CI check is considered unenforced.
+- Rule scoping: convert file-type-specific rules from `alwaysApply: true` to correct `globs` (e.g. `**/*.rs`, `**/*.{ts,tsx}`) so the right rule auto-attaches in context and the always-on set stays short and actually read.
+- `definition-of-done.mdc`: single pre-completion checklist the agent must satisfy (evidence-backed tests run, no new clippy/eslint warnings, docs/ADR updated, migrations forward-only, tenant-scoping verified, OpenAPI + schema in sync). Generalizes the existing `regression-testing.mdc` gate.
+
+### 16.2 Adapt copied rules to Geos
+Rewrite foreign paths/commands (`apps/api`, `apps/web-vite`, `cloudwrkz-api`, `shared/permissions/catalog.json`) to Geos layout (`crates/{core,api,workers,cli}`, `frontend/`, `nebular-os/`):
+- `regression-testing.mdc`: new test inventory/matrix using `cargo test -p geos-{core,api,workers,cli}` + Playwright e2e; hotspots = tenant isolation, RBAC, migrations, geo/vector queries, ingestion idempotency, impact scoring.
+- `api-error-shape.mdc`, `api-sqlx-migrations.mdc`, `project-layout.mdc`, `audit-log-coverage.mdc`, `data-safety.mdc`, `docker-compose-safety.mdc`, `frontend-npm-lockfile-docker.mdc`, `security-audit-scripts.mdc`: re-point at Geos crates/services and the canonical `AppError`.
+- Merge duplicates across the three sources, keeping the most complete version (e.g. cloudwrkz `git-commits.mdc`).
+- `nebular-os-vendor.mdc`: keep as-is (submodule rule already correct) and reference Geos `crates/core` storage module as the integration point.
+
+### 16.3 New Geos-specific rules
+- `canonical-event-schema.mdc` (critical): the `Event` type in `crates/core` is the single source of truth; any change must update the Rust struct + exported JSON Schema + generated TS types + a migration together, verified by a CI schema-drift check. No ad-hoc event shapes anywhere.
+- `tenant-isolation.mdc`: every query/endpoint tenant-scoped; cross-tenant access is a security bug; super-admin is a separate, explicitly-guarded path; RBAC permission checks required on mutations.
+- `geospatial-postgis.mdc`: SRID 4326 everywhere; `geography` vs `geometry` usage; mandatory GiST spatial indexes; pgvector index policy (HNSW/IVFFlat) and dimension constraints; standard viewport-bbox query pattern.
+- `connector-contract.mdc`: all sources implement the `Connector` trait; idempotent upserts keyed on `source + source_event_id`; rate-limit + exponential backoff + retry; always persist raw payload; record source attribution and respect ToS/licensing.
+- `ai-provider-abstraction.mdc`: all AI calls go through the provider trait (never hardcode vendor/keys); versioned prompts; every AI step skippable in air-gapped/minimal mode; enforce per-tenant token/cost budgets; never send PII to a cloud provider when policy forbids.
+- `privacy-gdpr.mdc`: PII tagging required; data export/erasure paths must remain functional; retention enforced; never log PII (extends `api-error-shape` logging guidance); EU data-residency aware.
+- `rust/rust-quality.mdc` (extends `no-allow-dead-code`): no `unwrap()/expect()/panic!` in non-test paths; `unsafe` requires written justification; errors via `thiserror`/`AppError`; no blocking calls in async contexts.
+- `frontend-quality.mdc`: TS strict, no `any`, no committed `console.log`; react-three-fiber performance (dispose geometries/materials, memoization, instancing for many markers) since the globe is the perf-critical surface; theme tokens (amber-on-black) not hardcoded colors.
+
+### 16.4 Documentation rules (beyond inline comments)
+- `documentation.mdc`: ADRs in `docs/adr/` for significant decisions (seed from this plan's Sections 12-15); crate/module-level docs in each `lib.rs` and `frontend/README.md` (purpose, entry points, run instructions), enforced by `cargo doc` missing-docs warnings; OpenAPI spec generated and CI-checked so public API docs never drift; keep `inline-documentation.mdc` (`// Human:` / `// Agent:`) as-is for line/function level.
