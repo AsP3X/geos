@@ -9,7 +9,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::middleware::auth::require_auth;
 use crate::middleware::request_id::assign_request_context;
-use crate::routes::{auth, events, health};
+use crate::routes::{auth, events, health, search};
 use crate::state::AppState;
 
 /// Build the full HTTP router with middleware and `/api/v1` routes.
@@ -23,6 +23,7 @@ pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/v1/events", get(events::list))
         .route("/api/v1/events/{id}", get(events::get_by_id))
+        .route("/api/v1/search", get(search::search))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()

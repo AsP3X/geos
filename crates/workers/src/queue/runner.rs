@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use geos_core::db::{self, PgPool, WorkerTask};
+use geos_core::meili::MeiliClient;
 use geos_core::Result;
 use tracing::{error, info, warn};
 
@@ -17,20 +18,23 @@ use super::scheduler::Shutdown;
 pub struct WorkerRuntime {
     /// USGS earthquake connector instance.
     pub usgs: UsgsEarthquakeConnector,
+    /// Meilisearch client for post-upsert indexing.
+    pub meili: Option<MeiliClient>,
 }
 
 impl WorkerRuntime {
     /// Build runtime with default connector instances.
-    pub fn new() -> Self {
+    pub fn new(meili: Option<MeiliClient>) -> Self {
         Self {
             usgs: UsgsEarthquakeConnector::new(),
+            meili,
         }
     }
 }
 
 impl Default for WorkerRuntime {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -103,9 +107,14 @@ async fn claim_and_run(pool: &PgPool, worker_id: &str, runtime: &WorkerRuntime) 
 async fn execute_task(pool: &PgPool, runtime: &WorkerRuntime, task: &WorkerTask) -> Result<()> {
     match task.task_type.as_str() {
         INGEST_USGS_LIVE => {
-            let stats = ingest::ingest_usgs_live(pool, &runtime.usgs, task.tenant_id)
-                .await
-                .map_err(|err| geos_core::AppError::internal(err.to_string()))?;
+            let stats = ingest::ingest_usgs_live(
+                pool,
+                &runtime.usgs,
+                task.tenant_id,
+                runtime.meili.as_ref(),
+            )
+            .await
+            .map_err(|err| geos_core::AppError::internal(err.to_string()))?;
             info!(?stats, task_id = %task.id, "USGS live ingest finished");
             Ok(())
         }

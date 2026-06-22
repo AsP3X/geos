@@ -9,6 +9,7 @@ use axum::{
 use geos_api::{build_router, AppState};
 use geos_core::config::Config;
 use geos_core::db::{connect_pool, run_migrations};
+use geos_core::meili::{self, MeiliClient};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -22,16 +23,19 @@ async fn setup() -> Option<AppState> {
         std::env::set_var("JWT_SECRET", "test-jwt-secret-for-integration-tests-only!!");
     }
     std::env::set_var("MEILI_URL", "http://localhost:7700");
-    std::env::set_var(
-        "MEILI_MASTER_KEY",
-        "test-meili-master-key-for-integration!!",
-    );
+    std::env::set_var("MEILI_MASTER_KEY", "masterKeyChangeMe32CharsMinimum!");
     std::env::set_var("STORAGE_URL", "http://localhost:9000");
 
     let config = Config::from_env().ok()?;
     let pool = connect_pool(&config.database_url).await.ok()?;
     run_migrations(&pool).await.ok()?;
-    Some(AppState { config, pool })
+    let meili = MeiliClient::new(&config.meili_url, &config.meili_master_key).ok()?;
+    meili::ensure_events_index(meili.client()).await.ok()?;
+    Some(AppState {
+        config,
+        pool,
+        meili,
+    })
 }
 
 async fn read_json(response: axum::response::Response) -> Value {

@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use geos_api::{build_router, AppState};
 use geos_core::config::Config;
 use geos_core::db::{connect_pool, run_migrations};
+use geos_core::meili::{self, MeiliClient};
 
 #[tokio::main]
 async fn main() {
@@ -26,9 +27,13 @@ async fn run() -> geos_core::Result<()> {
     let pool = connect_pool(&config.database_url).await?;
     run_migrations(&pool).await?;
 
+    let meili = MeiliClient::new(&config.meili_url, &config.meili_master_key)?;
+    meili::ensure_events_index(meili.client()).await?;
+
     let state = AppState {
         config: config.clone(),
         pool,
+        meili,
     };
 
     let app = build_router(state);

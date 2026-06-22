@@ -1,4 +1,4 @@
-//! Events API integration tests (require `DATABASE_URL`).
+//! Search API integration tests (require `DATABASE_URL` and Meilisearch).
 
 #![allow(clippy::unwrap_used)]
 
@@ -12,8 +12,7 @@ use geos_api::{build_router, AppState};
 use geos_core::config::Config;
 use geos_core::db::{connect_pool, run_migrations, upsert_event};
 use geos_core::events::{Category, Event, EventStatus, GeoPoint, Severity, VerificationStatus};
-use geos_core::meili::{self, MeiliClient};
-use geos_core::tenancy::SYSTEM_TENANT_ID;
+use geos_core::meili::{self, upsert_event_document, MeiliClient};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -59,7 +58,7 @@ async fn register_tenant(app: &Router, slug: &str, email: &str) -> Value {
                     serde_json::json!({
                         "email": email,
                         "password": "secure-password-12",
-                        "tenant_name": "Test Org",
+                        "tenant_name": "Search Org",
                         "tenant_slug": slug,
                     })
                     .to_string(),
@@ -72,7 +71,7 @@ async fn register_tenant(app: &Router, slug: &str, email: &str) -> Value {
     read_json(response).await
 }
 
-fn sample_event(tenant_id: Uuid, source_event_id: &str) -> Event {
+fn searchable_event(tenant_id: Uuid, source_event_id: &str, title: &str) -> Event {
     let now = Utc::now();
     Event {
         id: Uuid::new_v4(),
@@ -81,29 +80,29 @@ fn sample_event(tenant_id: Uuid, source_event_id: &str) -> Event {
         source_event_id: source_event_id.to_owned(),
         category: Category::Earthquake,
         severity: Severity::Moderate,
-        impact_score: 42,
-        magnitude: Some(4.5),
-        title: Some("Test quake".to_owned()),
-        summary: None,
+        impact_score: 55,
+        magnitude: Some(4.2),
+        title: Some(title.to_owned()),
+        summary: Some("UniqueSearchMarker summary text".to_owned()),
         body: None,
         original_text: None,
         translated_text: None,
         language: None,
         location: GeoPoint {
-            lon: -122.0,
-            lat: 37.0,
+            lon: -118.0,
+            lat: 34.0,
         },
         affected_area: None,
         country: Some("US".to_owned()),
         region: None,
-        place_name: Some("Testville".to_owned()),
+        place_name: Some("Searchville".to_owned()),
         occurred_at: now,
         detected_at: None,
         ingested_at: now,
         status: EventStatus::Active,
         verification_status: VerificationStatus::Unverified,
-        confidence: 0.9,
-        tags: vec!["test".to_owned()],
+        confidence: 0.8,
+        tags: vec!["search-test".to_owned()],
         url: None,
         raw: serde_json::json!({}),
         embedding: None,
@@ -111,33 +110,46 @@ fn sample_event(tenant_id: Uuid, source_event_id: &str) -> Event {
 }
 
 #[tokio::test]
-async fn events_require_auth_and_respect_tenant_isolation() {
+async fn search_is_tenant_scoped_and_requires_auth() {
     let Some(state) = setup().await else {
         return;
     };
 
     let pool = state.pool.clone();
+    let meili = state.meili.clone();
     let app = build_router(state);
 
-    let slug_a = format!("tenant-a-{}", Uuid::new_v4().simple());
-    let slug_b = format!("tenant-b-{}", Uuid::new_v4().simple());
-    let auth_a = register_tenant(&app, &slug_a, &format!("a-{slug_a}@example.com")).await;
-    let auth_b = register_tenant(&app, &slug_b, &format!("b-{slug_b}@example.com")).await;
+    let slug_a = format!("search-a-{}", Uuid::new_v4().simple());
+    let slug_b = format!("search-b-{}", Uuid::new_v4().simple());
+    let auth_a = register_tenant(&app, &slug_a, &format!("search-a-{slug_a}@example.com")).await;
+    let auth_b = register_tenant(&app, &slug_b, &format!("search-b-{slug_b}@example.com")).await;
 
     let tenant_a: Uuid = auth_a["tenant_id"].as_str().unwrap().parse().unwrap();
+    let tenant_b: Uuid = auth_b["tenant_id"].as_str().unwrap().parse().unwrap();
     let token_a = auth_a["access_token"].as_str().unwrap();
     let token_b = auth_b["access_token"].as_str().unwrap();
 
-    let event = sample_event(tenant_a, "iso-test-1");
-    let event_id = event.id;
-    upsert_event(&pool, &event).await.unwrap();
+    let event_a = searchable_event(tenant_a, "search-a-1", "UniqueSearchMarker Alpha");
+    upsert_event(&pool, &event_a).await.unwrap();
+    upsert_event_document(meili.client(), &event_a)
+        .await
+        .unwrap();
+
+    let event_b = searchable_event(tenant_b, "search-b-1", "UniqueSearchMarker Beta");
+    upsert_event(&pool, &event_b).await.unwrap();
+    upsert_event_document(meili.client(), &event_b)
+        .await
+        .unwrap();
+
+    // Meilisearch indexing is async; wait briefly for documents to become searchable.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let unauth = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/events")
+                .uri("/api/v1/search?q=UniqueSearchMarker")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -145,50 +157,38 @@ async fn events_require_auth_and_respect_tenant_isolation() {
         .unwrap();
     assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
 
-    let list_a = app
+    let tenant_a_hits = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/events")
+                .uri("/api/v1/search?q=UniqueSearchMarker")
                 .header("authorization", format!("Bearer {token_a}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(list_a.status(), StatusCode::OK);
-    let list_json = read_json(list_a).await;
-    assert_eq!(list_json["items"].as_array().unwrap().len(), 1);
+    assert_eq!(tenant_a_hits.status(), StatusCode::OK);
+    let hits_a = read_json(tenant_a_hits).await;
+    let items_a = hits_a["hits"].as_array().unwrap();
+    assert_eq!(items_a.len(), 1);
+    assert_eq!(items_a[0]["id"].as_str().unwrap(), event_a.id.to_string());
 
-    let cross_tenant = app
-        .clone()
+    let tenant_b_hits = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/events/{event_id}"))
+                .uri("/api/v1/search?q=UniqueSearchMarker")
                 .header("authorization", format!("Bearer {token_b}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(cross_tenant.status(), StatusCode::NOT_FOUND);
-
-    let system_event = sample_event(SYSTEM_TENANT_ID, "system-only");
-    let system_event_id = system_event.id;
-    upsert_event(&pool, &system_event).await.unwrap();
-
-    let tenant_a_system = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!("/api/v1/events/{system_event_id}"))
-                .header("authorization", format!("Bearer {token_a}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(tenant_a_system.status(), StatusCode::NOT_FOUND);
+    assert_eq!(tenant_b_hits.status(), StatusCode::OK);
+    let hits_b = read_json(tenant_b_hits).await;
+    let items_b = hits_b["hits"].as_array().unwrap();
+    assert_eq!(items_b.len(), 1);
+    assert_eq!(items_b[0]["id"].as_str().unwrap(), event_b.id.to_string());
 }

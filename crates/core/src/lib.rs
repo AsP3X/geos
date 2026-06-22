@@ -15,6 +15,7 @@ pub mod db;
 pub mod error;
 pub mod events;
 pub mod impact;
+pub mod meili;
 pub mod password;
 pub mod rbac;
 pub mod tenancy;

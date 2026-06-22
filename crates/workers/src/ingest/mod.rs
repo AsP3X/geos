@@ -1,6 +1,7 @@
 //! Live ingestion pipeline: fetch -> normalize -> upsert.
 
 use geos_core::db::{self, touch_live_run, PgPool};
+use geos_core::meili::{self, MeiliClient};
 use geos_core::AppError;
 use tracing::warn;
 
@@ -34,6 +35,7 @@ pub async fn ingest_usgs_live(
     pool: &PgPool,
     connector: &UsgsEarthquakeConnector,
     tenant_id: uuid::Uuid,
+    meili: Option<&MeiliClient>,
 ) -> Result<IngestStats, IngestError> {
     let records = connector.fetch_live().await?;
     let mut stats = IngestStats {
@@ -67,6 +69,16 @@ pub async fn ingest_usgs_live(
         }
 
         stats.upserted += 1;
+
+        if let Some(meili) = meili {
+            if let Err(err) = meili::upsert_event_document(meili.client(), &event).await {
+                warn!(
+                    source_event_id = %event.source_event_id,
+                    error = %err,
+                    "meilisearch indexing failed"
+                );
+            }
+        }
     }
 
     touch_live_run(pool, tenant_id, USGS_SOURCE).await?;

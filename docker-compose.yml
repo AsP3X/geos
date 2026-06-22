@@ -25,7 +25,7 @@ services:
     container_name: geos-meilisearch
     restart: unless-stopped
     environment:
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum!}
       MEILI_ENV: ${MEILI_ENV:-development}
     ports:
       - "${MEILI_PORT:-7700}:7700"
@@ -59,7 +59,7 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-geos}:${POSTGRES_PASSWORD:-geos}@postgres:5432/${POSTGRES_DB:-geos}
       MEILI_URL: http://meilisearch:7700
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum!}
       STORAGE_URL: http://object-storage:9000
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (min 32 chars)}
       GEOS_BIND_ADDR: 0.0.0.0:8080
@@ -85,7 +85,7 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-geos}:${POSTGRES_PASSWORD:-geos}@postgres:5432/${POSTGRES_DB:-geos}
       MEILI_URL: http://meilisearch:7700
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum!}
       STORAGE_URL: http://object-storage:9000
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use geos_core::meili::MeiliClient;
 use geos_workers::queue::{
     bootstrap_tasks, run_scheduler_loop, run_worker_loop, Shutdown, WorkerRuntime,
     DEFAULT_POLL_INTERVAL,
@@ -19,8 +20,8 @@ async fn main() {
 
     tracing::info!(version = geos_core::VERSION, "geos-workers starting");
 
-    let pool = match connect_database().await {
-        Ok(pool) => pool,
+    let (pool, meili) = match connect_database().await {
+        Ok(services) => services,
         Err(reason) => {
             tracing::error!(%reason, "database unavailable; queue workers idle until shutdown");
             wait_for_shutdown().await;
@@ -29,8 +30,12 @@ async fn main() {
         }
     };
 
+    if meili.is_none() {
+        tracing::info!("MEILI_URL not configured; skipping search indexing");
+    }
+
     let shutdown = Shutdown::new();
-    let runtime = Arc::new(WorkerRuntime::new());
+    let runtime = Arc::new(WorkerRuntime::new(meili));
     let poll_interval = worker_poll_interval();
     let concurrency = worker_concurrency();
 
@@ -79,9 +84,7 @@ async fn main() {
     tracing::info!("geos-workers shutting down");
 }
 
-// Human: Connect and migrate Postgres when DATABASE_URL is present.
-// Agent: READS DATABASE_URL; CALLS connect_pool, run_migrations; RETURNS error reason.
-async fn connect_database() -> Result<geos_core::db::PgPool, String> {
+async fn connect_database() -> Result<(geos_core::db::PgPool, Option<MeiliClient>), String> {
     let db_url = match std::env::var("DATABASE_URL") {
         Ok(url) if !url.trim().is_empty() => url,
         _ => return Err("DATABASE_URL not set".to_owned()),
@@ -95,7 +98,22 @@ async fn connect_database() -> Result<geos_core::db::PgPool, String> {
         .await
         .map_err(|err| format!("migration failed: {err}"))?;
 
-    Ok(pool)
+    let meili = init_meili().await;
+    Ok((pool, meili))
+}
+
+async fn init_meili() -> Option<MeiliClient> {
+    let url = std::env::var("MEILI_URL").ok()?;
+    let key = std::env::var("MEILI_MASTER_KEY").ok()?;
+    if url.trim().is_empty() || key.trim().is_empty() {
+        return None;
+    }
+
+    let client = MeiliClient::new(&url, &key).ok()?;
+    if let Err(err) = geos_core::meili::ensure_events_index(client.client()).await {
+        tracing::warn!(error = %err, "meilisearch index setup failed");
+    }
+    Some(client)
 }
 
 fn worker_concurrency() -> usize {
