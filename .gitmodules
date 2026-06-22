@@ -1,0 +1,3 @@
+[submodule "nebular-os"]
+	path = nebular-os
+	url = https://github.com/AsP3X/nebular-os.git
