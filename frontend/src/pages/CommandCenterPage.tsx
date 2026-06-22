@@ -1,14 +1,19 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Radio } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { EventDetail, EventList } from "@/components/events/EventPanels";
-import { GlobeViewport } from "@/components/globe/GlobeViewport";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useEventStream } from "@/hooks/useEventStream";
 import { ApiError } from "@/lib/api-client";
 import { listEvents, searchEvents } from "@/lib/events-api";
 import type { Event } from "@/types/event";
+
+const GlobeViewport = lazy(() =>
+  import("@/components/globe/GlobeViewport").then((module) => ({
+    default: module.GlobeViewport,
+  })),
+);
 
 function mergeEvent(list: Event[], incoming: Event): Event[] {
   const index = list.findIndex((item) => item.id === incoming.id);
@@ -135,7 +140,15 @@ export function CommandCenterPage() {
   return (
     <div className="fixed inset-0 overflow-hidden bg-background">
       <div className="absolute inset-0 z-0">
-        <GlobeViewport events={events} selectedId={selectedId} onSelect={setSelectedId} />
+        <Suspense
+          fallback={
+            <div className="flex size-full items-center justify-center bg-[#0a0c10] text-sm text-foreground/50">
+              Loading globe…
+            </div>
+          }
+        >
+          <GlobeViewport events={events} selectedId={selectedId} onSelect={setSelectedId} />
+        </Suspense>
       </div>
 
       {/* Floating centered top bar pill. */}
