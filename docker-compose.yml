@@ -62,6 +62,12 @@ services:
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-masterKeyChangeMe32CharsMinimum!}
       STORAGE_URL: http://object-storage:9000
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (min 32 chars)}
+      # Signs the service tokens the API uses to read/write the tile cache bucket
+      # in nebular-os; must match the object-storage NOS_JWT_SECRET above.
+      NOS_JWT_SECRET: ${NOS_JWT_SECRET:?Set NOS_JWT_SECRET in .env (min 32 chars)}
+      TILES_BUCKET: ${TILES_BUCKET:-geos-tiles}
+      TILES_MAX_ZOOM: ${TILES_MAX_ZOOM:-12}
+      IMAGERY_UPSTREAM_URL: ${IMAGERY_UPSTREAM_URL:-https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg}
       GEOS_BIND_ADDR: 0.0.0.0:8080
       RUST_LOG: ${RUST_LOG:-info}
     ports:

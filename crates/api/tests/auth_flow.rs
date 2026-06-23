@@ -6,11 +6,13 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use geos_api::routes::tiles::TileFlight;
 use geos_api::stream::EventStreamHub;
 use geos_api::{build_router, AppState};
 use geos_core::config::Config;
 use geos_core::db::{connect_pool, run_migrations};
 use geos_core::meili::{self, MeiliClient};
+use geos_core::storage::StorageClient;
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -26,17 +28,29 @@ async fn setup() -> Option<AppState> {
     std::env::set_var("MEILI_URL", "http://localhost:7700");
     std::env::set_var("MEILI_MASTER_KEY", "masterKeyChangeMe32CharsMinimum!");
     std::env::set_var("STORAGE_URL", "http://localhost:9000");
+    if std::env::var("NOS_JWT_SECRET").is_err() {
+        std::env::set_var(
+            "NOS_JWT_SECRET",
+            "test-nos-jwt-secret-for-integration-tests!!",
+        );
+    }
 
     let config = Config::from_env().ok()?;
     let pool = connect_pool(&config.database_url).await.ok()?;
     run_migrations(&pool).await.ok()?;
     let meili = MeiliClient::new(&config.meili_url, &config.meili_master_key).ok()?;
     meili::ensure_events_index(meili.client()).await.ok()?;
+    let http = reqwest::Client::new();
+    let storage =
+        StorageClient::with_client(http.clone(), &config.storage_url, &config.nos_jwt_secret);
     Some(AppState {
         config,
         pool,
         meili,
         stream: EventStreamHub::default(),
+        http,
+        storage,
+        tile_flight: TileFlight::default(),
     })
 }
 

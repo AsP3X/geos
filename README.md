@@ -3,8 +3,8 @@
 Geos is a multi-tenant SaaS for ingesting, normalizing, correlating, and
 visualizing OSINT / public-source events (earthquakes, incidents, alerts,
 weather, news, conflict) on an interactive 3D globe. The backend, workers, and
-CLI are written in Rust; the frontend is React + Vite with a react-three-fiber
-globe.
+CLI are written in Rust; the frontend is React + Vite with a CesiumJS globe fed
+by a local, caching Sentinel-2 tile proxy.
 
 > Source-available under the **Nebular OS Private Non-Commercial License v1.0**
 > (Copyright © 2026 Niklas Vorberg). See [`LICENSE`](./LICENSE). Commercial use
@@ -18,7 +18,7 @@ globe.
 | HTTP + WS API | `crates/api` | Axum, JWT/argon2 auth, tenant scoping, RBAC |
 | Ingestion workers | `crates/workers` | Connectors, normalizer, enrichment, correlation, schedulers |
 | Interactive TUI | `crates/cli` | ratatui |
-| Frontend | `frontend/` | React + Vite + TypeScript + Tailwind v4 + shadcn/ui + react-three-fiber |
+| Frontend | `frontend/` | React + Vite + TypeScript + Tailwind v4 + shadcn/ui + CesiumJS globe |
 | Migrations | `migrations/` | sqlx (PostGIS + pgvector) |
 | Object storage | `nebular-os/` | Git submodule — self-hosted S3-compatible storage (read-only vendor) |
 
@@ -82,8 +82,28 @@ docker compose up --build
 | `scripts/db-backup.sh` / `scripts/db-restore.sh` | Back up / restore the database |
 | `scripts/lint.sh` | Run fmt + clippy + eslint + tsc (mirrors hooks/CI) |
 | `scripts/gen-types.sh` | Export Event JSON Schema → TS types *(added with the schema)* |
+| `scripts/gen-contour-tiles.sh` | Generate the offline ETOPO contour basemap tiles (needs GDAL ≥ 3.5) |
 | `scripts/seed.sh` | Seed sample data *(added with connectors)* |
 | `scripts/submodule-init.sh` | Initialize the nebular-os submodule |
+
+## Globe imagery (Cesium + caching tile proxy)
+
+The globe uses **CesiumJS** with a local **Sentinel-2** tile pyramid. The API
+exposes a caching tile proxy at `GET /api/v1/tiles/sentinel2/{z}/{x}/{y}.jpg`
+(public, token-gated): a storage hit in nebular-os (bucket `geos-tiles`) is
+served directly; on a miss the tile is fetched once from EOX Sentinel-2 cloudless
+(CC-BY 4.0), served, and persisted, so the local dataset grows lazily as areas
+are viewed. Max zoom is **z12** (~38 m/px), enforced server-side. The browser
+gets a medium-lived imagery token from `GET /api/v1/tiles/session`.
+
+Relevant env (see `.env.example`): `NOS_JWT_SECRET` (signs the service token the
+API uses for the tile bucket), `TILES_BUCKET`, `TILES_MAX_ZOOM`,
+`IMAGERY_UPSTREAM_URL`.
+
+**Offline fallback:** run `scripts/gen-contour-tiles.sh` once (GDAL ≥ 3.5) to
+build an elevation-contour basemap from the public-domain ETOPO 2022 DEM into
+`frontend/public/contours/`. Cesium draws it beneath the Sentinel layer, so when
+upstream imagery is unavailable the globe still renders with no network.
 
 ## Quality gates
 

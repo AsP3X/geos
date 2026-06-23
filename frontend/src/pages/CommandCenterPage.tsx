@@ -7,7 +7,7 @@ import { FilterPanel } from "@/components/filters/FilterPanel";
 import { eventMatchesFilters, filtersAreActive, type EventFilters } from "@/components/filters/filters";
 import { LayersRail } from "@/components/globe/LayersRail";
 import { DEFAULT_LAYERS, isQuake, type GlobeLayers } from "@/components/globe/layers";
-import type { GlobeCluster } from "@/components/globe/useScreenClusters";
+import type { GlobeCluster } from "@/components/globe/cesium/clusters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConnectorStatus } from "@/hooks/useConnectorStatus";
@@ -32,8 +32,8 @@ import type { Event } from "@/types/event";
 const PAGE_SIZE = 200;
 
 const GlobeViewport = lazy(() =>
-  import("@/components/globe/GlobeViewport").then((module) => ({
-    default: module.GlobeViewport,
+  import("@/components/globe/cesium/CesiumGlobeViewport").then((module) => ({
+    default: module.CesiumGlobeViewport,
   })),
 );
 

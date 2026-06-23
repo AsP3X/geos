@@ -17,3 +17,7 @@ frontend/node_modules
 # Editor / OS
 .DS_Store
 *.log
+
+# Generated offline contour basemap tiles + DEM cache (scripts/gen-contour-tiles.sh)
+/frontend/public/contours/
+/.cache/

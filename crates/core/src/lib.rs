@@ -18,6 +18,7 @@ pub mod impact;
 pub mod meili;
 pub mod password;
 pub mod rbac;
+pub mod storage;
 pub mod tenancy;
 
 pub use error::{AppError, Result};

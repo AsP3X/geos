@@ -621,6 +621,7 @@ name = "geos-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "chrono",
  "futures-util",
  "geos-core",
@@ -628,6 +629,7 @@ dependencies = [
  "http",
  "http-body-util",
  "jsonwebtoken",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -656,8 +658,11 @@ name = "geos-core"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "bytes",
  "chrono",
+ "jsonwebtoken",
  "meilisearch-sdk",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",

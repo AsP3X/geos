@@ -7,3 +7,4 @@ pub mod health;
 pub mod saved_filters;
 pub mod search;
 pub mod stream;
+pub mod tiles;

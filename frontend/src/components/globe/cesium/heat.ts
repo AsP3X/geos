@@ -1,20 +1,13 @@
-import { useEffect, useMemo } from "react";
-import * as THREE from "three";
 import type { Event } from "@/types/event";
-import { GLOBE_RADIUS } from "@/components/globe/geo";
 import { quakeStrength } from "@/components/globe/layers";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 /** Equirectangular heat canvas resolution (smooth enough, cheap to repaint). */
 const TEX_W = 1024;
 const TEX_H = 512;
-/** Thin shell above the surface so the field sits on the globe, not floating. */
-const HEAT_RADIUS = GLOBE_RADIUS * 1.0035;
 
 /**
- * Thermal colormap stops `[t, r, g, b]` (cool → hot). Painting a continuous
- * field through this ramp reads as a real heatmap, unlike additively blended
- * sprites which wash out and float above the surface.
+ * Thermal colormap stops `[t, r, g, b]` (cool → hot), matching the r3f
+ * `QuakeHeatLayer.tsx` so the heat overlay reads identically on the new globe.
  */
 const RAMP: ReadonlyArray<readonly [number, number, number, number]> = [
   [0.0, 38, 70, 160],
@@ -40,11 +33,12 @@ function rampColor(t: number): [number, number, number] {
 }
 
 /**
- * Accumulate a gaussian splat per quake into an equirectangular intensity
- * field, then map intensity through the thermal ramp. Density (overlapping
- * splats) and magnitude both push regions toward hot.
+ * Accumulate a gaussian splat per quake into an equirectangular intensity field,
+ * then map intensity through the thermal ramp. Returns an `HTMLCanvasElement`
+ * suitable for a Cesium `SingleTileImageryProvider` covering the whole globe, or
+ * `null` when there is nothing to draw.
  */
-function buildHeatTexture(events: Event[]): THREE.CanvasTexture | null {
+export function buildHeatCanvas(events: Event[]): HTMLCanvasElement | null {
   if (events.length === 0) {
     return null;
   }
@@ -57,8 +51,6 @@ function buildHeatTexture(events: Event[]): THREE.CanvasTexture | null {
     const cy = ((90 - event.location.lat) / 180) * TEX_H;
     const weight = 0.35 + strength * 0.95;
 
-    // Radius in pixels grows with strength; stretch horizontally toward the
-    // poles so the splat stays roughly circular on the sphere.
     const ry = 9 + strength * 24;
     const latRad = (event.location.lat * Math.PI) / 180;
     const xStretch = Math.min(1 / Math.max(Math.cos(latRad), 0.16), 6);
@@ -78,7 +70,6 @@ function buildHeatTexture(events: Event[]): THREE.CanvasTexture | null {
         if (d2 > 1) {
           continue;
         }
-        // Wrap longitude across the antimeridian.
         const xi = ((x % TEX_W) + TEX_W) % TEX_W;
         intensity[row + xi] += weight * Math.exp(-d2 * 3.0);
       }
@@ -95,7 +86,6 @@ function buildHeatTexture(events: Event[]): THREE.CanvasTexture | null {
 
   const image = ctx.createImageData(TEX_W, TEX_H);
   for (let i = 0; i < intensity.length; i += 1) {
-    // Saturating normalization: lone quakes stay cool, clusters drive hot.
     const t = 1 - Math.exp(-1.15 * intensity[i]);
     const o = i * 4;
     if (t < 0.02) {
@@ -110,41 +100,5 @@ function buildHeatTexture(events: Event[]): THREE.CanvasTexture | null {
   }
   ctx.putImageData(image, 0, 0);
 
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.needsUpdate = true;
-  return texture;
-}
-
-interface QuakeHeatLayerProps {
-  /** Pre-filtered quake events. */
-  events: Event[];
-  layerEpoch: number;
-  loadingMore?: boolean;
-}
-
-/** Texture-painted thermal field mapped onto a thin shell over the globe. */
-export function QuakeHeatLayer({ events, layerEpoch, loadingMore = false }: QuakeHeatLayerProps) {
-  const buildDebounceMs = events.length > 2_500 || loadingMore ? 400 : 0;
-  const buildEvents = useDebouncedValue(events, buildDebounceMs);
-  const texture = useMemo(() => buildHeatTexture(buildEvents), [buildEvents]);
-
-  useEffect(() => () => texture?.dispose(), [texture]);
-
-  if (!texture) {
-    return null;
-  }
-
-  return (
-    <mesh key={layerEpoch} renderOrder={1}>
-      <sphereGeometry args={[HEAT_RADIUS, 96, 96]} />
-      <meshBasicMaterial
-        map={texture}
-        transparent
-        depthWrite={false}
-        side={THREE.FrontSide}
-        toneMapped={false}
-      />
-    </mesh>
-  );
+  return canvas;
 }

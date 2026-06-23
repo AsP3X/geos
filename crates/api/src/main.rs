@@ -2,11 +2,13 @@
 
 use std::net::SocketAddr;
 
+use geos_api::routes::tiles::TileFlight;
 use geos_api::stream::{run_event_listener, EventStreamHub};
 use geos_api::{build_router, AppState};
 use geos_core::config::Config;
 use geos_core::db::{connect_pool, run_migrations};
 use geos_core::meili::{self, MeiliClient};
+use geos_core::storage::StorageClient;
 
 #[tokio::main]
 async fn main() {
@@ -31,6 +33,14 @@ async fn run() -> geos_core::Result<()> {
     let meili = MeiliClient::new(&config.meili_url, &config.meili_master_key)?;
     meili::ensure_events_index(meili.client()).await?;
 
+    // Shared outbound HTTP client; the storage client reuses its connection pool
+    // so the tile proxy and object-store calls share keep-alive connections.
+    let http = reqwest::Client::builder()
+        .build()
+        .map_err(|err| geos_core::AppError::Config(format!("http client: {err}")))?;
+    let storage =
+        StorageClient::with_client(http.clone(), &config.storage_url, &config.nos_jwt_secret);
+
     let stream = EventStreamHub::default();
     let listener_url = config.database_url.clone();
     let listener_tx = stream.publisher();
@@ -43,6 +53,9 @@ async fn run() -> geos_core::Result<()> {
         pool,
         meili,
         stream,
+        http,
+        storage,
+        tile_flight: TileFlight::default(),
     };
 
     let app = build_router(state);

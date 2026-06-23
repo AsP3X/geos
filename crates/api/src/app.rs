@@ -10,7 +10,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::middleware::auth::require_auth;
 use crate::middleware::request_id::assign_request_context;
-use crate::routes::{auth, connectors, events, health, saved_filters, search, stream};
+use crate::routes::{auth, connectors, events, health, saved_filters, search, stream, tiles};
 use crate::state::AppState;
 
 /// Build the full HTTP router with middleware and `/api/v1` routes.
@@ -20,7 +20,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/refresh", post(auth::refresh))
-        .route("/api/v1/stream", get(stream::stream));
+        .route("/api/v1/stream", get(stream::stream))
+        // Public router: imagery is global, not tenant data; the handler
+        // validates a signed tiles token from `?token=` itself.
+        .route(
+            "/api/v1/tiles/sentinel2/{z}/{x}/{y}",
+            get(tiles::serve_sentinel2),
+        );
 
     let protected = Router::new()
         .route("/api/v1/events", get(events::list))
@@ -41,6 +47,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/filter-state",
             get(saved_filters::get_state).put(saved_filters::put_state),
         )
+        .route("/api/v1/tiles/session", get(tiles::session))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()

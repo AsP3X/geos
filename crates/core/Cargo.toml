@@ -21,4 +21,7 @@ sqlx = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 argon2 = "0.5"
+bytes = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
