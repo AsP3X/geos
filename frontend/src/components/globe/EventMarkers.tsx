@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { Instance, Instances } from "@react-three/drei";
 import type { ThreeEvent } from "@react-three/fiber";
 import type { Event } from "@/types/event";
-import { latLonToVector3 } from "@/components/globe/geo";
+import { latLonToVector3, MARKER_BASE_RADIUS } from "@/components/globe/geo";
 import { severityToColor } from "@/components/globe/severity-colors";
 
 interface EventMarkersProps {
@@ -17,7 +17,7 @@ interface EventMarkersProps {
  * at a glance; a floor keeps minor events tappable.
  */
 function impactScale(impact: number): number {
-  return 0.65 + (Math.min(Math.max(impact, 0), 100) / 100) * 1.35;
+  return 0.55 + (Math.min(Math.max(impact, 0), 100) / 100) * 1.0;
 }
 
 /** Instanced event markers positioned on the globe surface, sized by impact. */
@@ -47,11 +47,11 @@ export function EventMarkers({ events, selectedId, onSelect }: EventMarkersProps
       onPointerOver={() => setHoverCursor(true)}
       onPointerOut={() => setHoverCursor(false)}
     >
-      <sphereGeometry args={[0.024, 12, 12]} />
+      <sphereGeometry args={[MARKER_BASE_RADIUS, 12, 12]} />
       <meshBasicMaterial toneMapped={false} />
       {events.map((event, index) => {
         const selected = event.id === selectedId;
-        const scale = impactScale(event.impact_score) * (selected ? 1.7 : 1);
+        const scale = impactScale(event.impact_score) * (selected ? 1.5 : 1);
         return (
           <Instance
             key={event.id}

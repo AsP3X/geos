@@ -5,6 +5,7 @@ import { GlobeCountryBorders } from "@/components/globe/GlobeCountryBorders";
 import { EventMarkers } from "@/components/globe/EventMarkers";
 import { QuakeHeatLayer } from "@/components/globe/QuakeHeatLayer";
 import { type GlobeLayers, isQuake } from "@/components/globe/layers";
+import { GLOBE_RADIUS } from "@/components/globe/geo";
 import type { Event } from "@/types/event";
 
 interface GlobeSceneProps {
@@ -20,7 +21,15 @@ export function GlobeScene({ events, selectedId, onSelect, layers }: GlobeSceneP
 
   return (
     <>
-      <Stars radius={60} depth={40} count={2600} factor={3.4} saturation={0} fade speed={0.4} />
+      <Stars
+        radius={GLOBE_RADIUS * 30}
+        depth={GLOBE_RADIUS * 20}
+        count={2600}
+        factor={3.4}
+        saturation={0}
+        fade
+        speed={0.4}
+      />
 
       {/* Low ambient keeps a defined day/night terminator for 3D form. */}
       <ambientLight intensity={0.18} />

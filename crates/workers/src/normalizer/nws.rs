@@ -257,7 +257,7 @@ mod tests {
     use crate::connector::{ConnectorError, RawRecord, NWS_SOURCE};
     use geos_core::events::Category;
     use geos_core::tenancy::SYSTEM_TENANT_ID;
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     fn sample_record() -> crate::connector::Result<RawRecord> {
         let body: Value =
@@ -283,6 +283,46 @@ mod tests {
         assert!((event.location.lat - 37.78).abs() < 0.01);
         assert!(event.impact_score > 0);
         assert!(event.raw.is_object());
+        Ok(())
+    }
+
+    #[test]
+    fn normalizes_zone_only_after_geometry_injection(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let body: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/nws_zone_only.geojson"))?;
+        let mut payload = body["features"][0].clone();
+        payload["geometry"] = json!({
+            "type": "Point",
+            "coordinates": [-110.53, 33.32]
+        });
+
+        let record = RawRecord {
+            source: NWS_SOURCE.to_owned(),
+            source_event_id: "urn:oid:2.49.0.1.840.0.9999999999.0.9999999999".to_owned(),
+            payload,
+        };
+        let event = normalize_nws_record(&record, SYSTEM_TENANT_ID)?;
+        assert_eq!(event.category, Category::Weather);
+        assert!((event.location.lon - (-110.53)).abs() < 0.01);
+        assert!((event.location.lat - 33.32).abs() < 0.01);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_zone_only_without_geometry() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let body: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/nws_zone_only.geojson"))?;
+        let record = RawRecord {
+            source: NWS_SOURCE.to_owned(),
+            source_event_id: "urn:oid:2.49.0.1.840.0.9999999999.0.9999999999".to_owned(),
+            payload: body["features"][0].clone(),
+        };
+        let err = match normalize_nws_record(&record, SYSTEM_TENANT_ID) {
+            Ok(_) => return Err("expected missing geometry error".into()),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("missing usable geometry"));
         Ok(())
     }
 

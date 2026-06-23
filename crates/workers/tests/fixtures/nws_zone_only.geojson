@@ -1,0 +1,33 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.9999999999.0.9999999999",
+      "geometry": null,
+      "properties": {
+        "id": "urn:oid:2.49.0.1.840.0.9999999999.0.9999999999",
+        "type": "Feature",
+        "areaDesc": "San Carlos",
+        "sent": "2024-06-15T18:00:00+00:00",
+        "effective": "2024-06-15T18:00:00+00:00",
+        "onset": "2024-06-15T20:00:00+00:00",
+        "expires": "2024-06-16T06:00:00+00:00",
+        "status": "Actual",
+        "messageType": "Alert",
+        "category": "Met",
+        "severity": "Extreme",
+        "certainty": "Likely",
+        "urgency": "Expected",
+        "event": "Extreme Heat Warning",
+        "headline": "Extreme Heat Warning issued June 15 until June 16",
+        "description": "Dangerously hot conditions expected.",
+        "geocode": {
+          "SAME": ["004007"],
+          "UGC": ["AZZ560"]
+        },
+        "senderName": "NWS Phoenix AZ"
+      }
+    }
+  ]
+}

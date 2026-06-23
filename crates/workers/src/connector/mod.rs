@@ -2,6 +2,7 @@
 
 mod http;
 mod nws;
+mod nws_zones;
 mod usgs;
 
 use async_trait::async_trait;

@@ -4,6 +4,12 @@ import { OrbitControls } from "@react-three/drei";
 import type { Event } from "@/types/event";
 import { GlobeScene } from "@/components/globe/GlobeScene";
 import type { GlobeLayers } from "@/components/globe/layers";
+import {
+  CAMERA_DISTANCE,
+  CAMERA_HEIGHT,
+  ORBIT_MAX_DISTANCE,
+  ORBIT_MIN_DISTANCE,
+} from "@/components/globe/geo";
 
 interface GlobeViewportProps {
   events: Event[];
@@ -17,7 +23,7 @@ export function GlobeViewport({ events, selectedId, onSelect, layers }: GlobeVie
   return (
     <div className="relative size-full min-h-full overflow-hidden bg-[#05070d]">
       <Canvas
-        camera={{ position: [0, 0.4, 5.2], fov: 42, near: 0.1, far: 200 }}
+        camera={{ position: [0, CAMERA_HEIGHT, CAMERA_DISTANCE], fov: 42, near: 0.1, far: 200 }}
         dpr={[1, 2]}
         gl={{ antialias: true, alpha: false }}
       >
@@ -36,8 +42,8 @@ export function GlobeViewport({ events, selectedId, onSelect, layers }: GlobeVie
           dampingFactor={0.08}
           autoRotate
           autoRotateSpeed={0.32}
-          minDistance={3.1}
-          maxDistance={12}
+          minDistance={ORBIT_MIN_DISTANCE}
+          maxDistance={ORBIT_MAX_DISTANCE}
           rotateSpeed={0.45}
           zoomSpeed={0.7}
         />

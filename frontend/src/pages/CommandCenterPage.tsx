@@ -59,6 +59,9 @@ const FAB_CLASS =
 /** Sit controls to the left of the open filters panel. */
 const RIGHT_OF_FILTERS_PANEL = "right-[calc(1rem+min(17rem,calc(100vw-2rem))+0.75rem)]";
 
+/** Sit the layers rail just right of the open events panel (matches its width). */
+const RIGHT_OF_EVENTS_PANEL = "left-[calc(1rem+min(18rem,calc(50vw-1.5rem))+0.75rem)]";
+
 export function CommandCenterPage() {
   const { session, logout, getAccessToken } = useAuth();
   const [events, setEvents] = useState<Event[]>([]);
@@ -284,12 +287,15 @@ export function CommandCenterPage() {
         </button>
       )}
 
-      {/* Left-edge visualization layers rail (collapses to squircles). */}
+      {/* Visualization layers rail: hugs the left edge, but slides to the right
+          of the events panel while it is open so the two never overlap. */}
       <LayersRail
         layers={layers}
         onChange={setLayers}
         side="left"
-        className="left-4 top-1/2 -translate-y-1/2"
+        className={`top-1/2 -translate-y-1/2 transition-[left] duration-300 ease-out ${
+          leftOpen ? RIGHT_OF_EVENTS_PANEL : "left-4"
+        }`}
       />
 
       {/* Floating right detail card (collapsible). */}

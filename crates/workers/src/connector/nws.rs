@@ -13,6 +13,7 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use super::http::{build_client, send_with_retry, ConditionalCache, RetryConfig};
+use super::nws_zones::NwsZoneResolver;
 use super::{Connector, ConnectorError, HistoricalRange, RawRecord, Result, NWS_SOURCE};
 
 /// Default active alerts feed (actual status only).
@@ -185,6 +186,14 @@ impl NwsWeatherConnector {
             tokio::time::sleep(self.request_delay).await;
         }
     }
+
+    /// Resolve UGC zone centroids for alerts that omit feature geometry.
+    async fn hydrate_zone_geometry(&self, records: &mut [RawRecord]) -> Result<()> {
+        let mut resolver =
+            NwsZoneResolver::new(self.client.clone(), self.request_delay, self.retry);
+        resolver.hydrate(records).await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -213,7 +222,9 @@ impl Connector for NwsWeatherConnector {
 
         lock_cache(&self.live_cache).update(&response);
         let body = response.text().await?;
-        Self::parse_feature_collection(&body)
+        let mut records = Self::parse_feature_collection(&body)?;
+        self.hydrate_zone_geometry(&mut records).await?;
+        Ok(records)
     }
 
     async fn fetch_historical(&self, range: HistoricalRange) -> Result<Vec<RawRecord>> {
@@ -234,7 +245,9 @@ impl Connector for NwsWeatherConnector {
             format_nws_time(start),
             format_nws_time(end),
         );
-        self.get_all_pages(url).await
+        let mut records = self.get_all_pages(url).await?;
+        self.hydrate_zone_geometry(&mut records).await?;
+        Ok(records)
     }
 }
 
