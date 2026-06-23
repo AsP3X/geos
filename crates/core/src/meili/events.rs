@@ -38,8 +38,11 @@ pub struct EventDocument {
     pub severity: String,
     /// Impact score 0–100.
     pub impact_score: u8,
-    /// Occurred-at timestamp (sortable).
+    /// Occurred-at timestamp (sortable, human-readable; for display).
     pub occurred_at: DateTime<Utc>,
+    /// Occurred-at as epoch seconds. Meili range filters require a numeric
+    /// attribute (the RFC3339 string above cannot be range-filtered).
+    pub occurred_at_unix: i64,
     /// Latitude.
     pub lat: f64,
     /// Longitude.
@@ -115,7 +118,14 @@ pub async fn ensure_events_index(client: &Client) -> Result<()> {
     }
 
     index
-        .set_filterable_attributes(["tenant_id", "category", "severity", "impact_score"])
+        .set_filterable_attributes([
+            "tenant_id",
+            "category",
+            "severity",
+            "impact_score",
+            "source",
+            "occurred_at_unix",
+        ])
         .await
         .map_err(map_meili_err)?;
     index
@@ -149,14 +159,26 @@ pub async fn upsert_event_document(client: &Client, event: &Event) -> Result<()>
 }
 
 /// Optional attribute filters applied on top of tenant scoping during search.
+///
+/// Multi-value dimensions are disjunctive within themselves (Meili `IN [...]`)
+/// and conjunctive with the other clauses. Magnitude is intentionally absent —
+/// it is not indexed and so cannot constrain search.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
-    /// Restrict to one category.
-    pub category: Option<Category>,
-    /// Restrict to one severity tier.
-    pub severity: Option<Severity>,
+    /// Restrict to these categories; empty = all.
+    pub categories: Vec<Category>,
+    /// Restrict to these severities; empty = all.
+    pub severities: Vec<Severity>,
+    /// Restrict to these source keys; empty = all.
+    pub sources: Vec<String>,
     /// Minimum impact score (0–100).
-    pub min_impact: Option<u8>,
+    pub impact_min: Option<u8>,
+    /// Maximum impact score (0–100).
+    pub impact_max: Option<u8>,
+    /// Lower bound on `occurred_at` (inclusive).
+    pub occurred_after: Option<DateTime<Utc>>,
+    /// Upper bound on `occurred_at` (inclusive).
+    pub occurred_before: Option<DateTime<Utc>>,
 }
 
 impl SearchFilters {
@@ -167,16 +189,66 @@ impl SearchFilters {
         let mut clauses = vec![format!(
             "(tenant_id = \"{tenant_id}\" OR tenant_id = \"{SYSTEM_TENANT_ID}\")"
         )];
-        if let Some(category) = self.category {
-            clauses.push(format!("category = \"{}\"", category_str(category)));
+        if !self.categories.is_empty() {
+            clauses.push(meili_in(
+                "category",
+                self.categories.iter().map(|c| category_str(*c)),
+            ));
         }
-        if let Some(severity) = self.severity {
-            clauses.push(format!("severity = \"{}\"", severity_str(severity)));
+        if !self.severities.is_empty() {
+            clauses.push(meili_in(
+                "severity",
+                self.severities.iter().map(|s| severity_str(*s)),
+            ));
         }
-        if let Some(min_impact) = self.min_impact {
-            clauses.push(format!("impact_score >= {min_impact}"));
+        if !self.sources.is_empty() {
+            clauses.push(meili_in("source", self.sources.iter().map(String::as_str)));
+        }
+        if let Some(impact_min) = self.impact_min {
+            clauses.push(format!("impact_score >= {impact_min}"));
+        }
+        if let Some(impact_max) = self.impact_max {
+            clauses.push(format!("impact_score <= {impact_max}"));
+        }
+        if let Some(after) = self.occurred_after {
+            clauses.push(format!("occurred_at_unix >= {}", after.timestamp()));
+        }
+        if let Some(before) = self.occurred_before {
+            clauses.push(format!("occurred_at_unix <= {}", before.timestamp()));
         }
         clauses.join(" AND ")
+    }
+}
+
+/// Render a Meili `attr IN ["a", "b"]` clause with quoted, escaped values.
+fn meili_in<'a>(attr: &str, values: impl Iterator<Item = &'a str>) -> String {
+    let rendered = values
+        .map(|v| format!("\"{}\"", v.replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{attr} IN [{rendered}]")
+}
+
+/// Sort order for search results. Magnitude is not indexed, so it is not an
+/// option here (the API maps a magnitude sort to relevance/recency).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchSort {
+    /// Default Meili relevance ranking (keyword match quality).
+    #[default]
+    Relevance,
+    /// Most recent first.
+    Recent,
+    /// Highest impact first.
+    ImpactDesc,
+}
+
+impl SearchSort {
+    fn rules(self) -> &'static [&'static str] {
+        match self {
+            SearchSort::Relevance => &[],
+            SearchSort::Recent => &["occurred_at:desc"],
+            SearchSort::ImpactDesc => &["impact_score:desc"],
+        }
     }
 }
 
@@ -186,17 +258,23 @@ pub async fn search_events(
     tenant_id: Uuid,
     query: &str,
     filters: &SearchFilters,
+    sort: SearchSort,
     limit: usize,
     offset: usize,
 ) -> Result<SearchResults> {
     let filter = filters.to_expression(tenant_id);
-    let results = client
-        .index(EVENTS_INDEX)
-        .search()
+    let index = client.index(EVENTS_INDEX);
+    let mut search = index.search();
+    search
         .with_query(query)
         .with_filter(&filter)
         .with_limit(limit)
-        .with_offset(offset)
+        .with_offset(offset);
+    let sort_rules = sort.rules();
+    if !sort_rules.is_empty() {
+        search.with_sort(sort_rules);
+    }
+    let results = search
         .execute::<EventDocument>()
         .await
         .map_err(map_meili_err)?;
@@ -230,6 +308,7 @@ impl EventDocument {
             severity: severity_str(event.severity).to_owned(),
             impact_score: event.impact_score,
             occurred_at: event.occurred_at,
+            occurred_at_unix: event.occurred_at.timestamp(),
             lat: event.location.lat,
             lon: event.location.lon,
         }
@@ -317,6 +396,8 @@ fn map_meili_err(err: meilisearch_sdk::errors::Error) -> crate::error::AppError 
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use crate::events::{EventStatus, GeoPoint, VerificationStatus};
 
@@ -361,5 +442,31 @@ mod tests {
         assert_eq!(doc.id, event_id.to_string());
         assert_eq!(doc.tenant_id, tenant_id.to_string());
         assert_eq!(doc.category, "earthquake");
+        assert_eq!(doc.occurred_at_unix, now.timestamp());
+    }
+
+    #[test]
+    fn filter_expression_uses_in_and_numeric_time() {
+        let tenant_id = Uuid::new_v4();
+        let after = chrono::DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("ts");
+        let filters = SearchFilters {
+            categories: vec![Category::Earthquake, Category::Weather],
+            severities: vec![],
+            sources: vec!["usgs".to_owned()],
+            impact_min: Some(20),
+            impact_max: Some(90),
+            occurred_after: Some(after),
+            occurred_before: None,
+        };
+        let expr = filters.to_expression(tenant_id);
+        assert!(expr.contains("tenant_id ="), "{expr}");
+        assert!(
+            expr.contains("category IN [\"earthquake\", \"weather\"]"),
+            "{expr}"
+        );
+        assert!(expr.contains("source IN [\"usgs\"]"), "{expr}");
+        assert!(expr.contains("impact_score >= 20"), "{expr}");
+        assert!(expr.contains("impact_score <= 90"), "{expr}");
+        assert!(expr.contains("occurred_at_unix >= 1700000000"), "{expr}");
     }
 }

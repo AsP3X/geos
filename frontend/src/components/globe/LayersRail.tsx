@@ -9,6 +9,11 @@ interface LayersRailProps {
   className?: string;
   /** Which screen edge the rail is pinned to (controls expand direction). */
   side?: "left" | "right";
+  /**
+   * Layer keys locked off because their category is excluded by the active
+   * filter (one-way globe-layer sync). Rendered disabled.
+   */
+  lockedKeys?: Partial<Record<keyof GlobeLayers, boolean>>;
 }
 
 interface LayerItem {
@@ -35,6 +40,7 @@ export function LayersRail({
   onChange,
   className,
   side = "right",
+  lockedKeys,
 }: LayersRailProps) {
   const onRight = side === "right";
 
@@ -61,22 +67,29 @@ export function LayersRail({
       </span>
 
       {ITEMS.map((item) => {
-        const active = layers[item.key];
+        const locked = lockedKeys?.[item.key] ?? false;
+        const disabled = item.disabled || locked;
+        const active = layers[item.key] && !locked;
         const Icon = item.icon;
+        const title = item.disabled
+          ? `${item.label} (coming soon)`
+          : locked
+            ? `${item.label} (category filtered out)`
+            : item.label;
         return (
           <button
             key={item.key}
             type="button"
-            disabled={item.disabled}
+            disabled={disabled}
             aria-pressed={active}
-            title={item.disabled ? `${item.label} (coming soon)` : item.label}
-            onClick={item.disabled ? undefined : () => toggle(item.key)}
+            title={title}
+            onClick={disabled ? undefined : () => toggle(item.key)}
             className={cn(
               "glass-panel relative flex h-11 w-11 items-center overflow-hidden rounded-2xl transition-[width,color] duration-200 ease-out",
               "group-hover:w-48",
               onRight ? "flex-row-reverse" : "flex-row",
               active ? "text-primary" : "text-foreground/65",
-              item.disabled ? "cursor-not-allowed opacity-40" : "hover:text-foreground",
+              disabled ? "cursor-not-allowed opacity-40" : "hover:text-foreground",
             )}
           >
             <span className="grid size-11 shrink-0 place-items-center">

@@ -88,4 +88,24 @@ export async function apiGet<T>(path: string, accessToken: string): Promise<T> {
   return request<T>(path, { method: "GET" }, accessToken);
 }
 
+export async function apiPost<T>(
+  path: string,
+  body: unknown,
+  accessToken: string,
+): Promise<T> {
+  return request<T>(path, { method: "POST", body: JSON.stringify(body) }, accessToken);
+}
+
+export async function apiPut<T>(
+  path: string,
+  body: unknown,
+  accessToken: string,
+): Promise<T> {
+  return request<T>(path, { method: "PUT", body: JSON.stringify(body) }, accessToken);
+}
+
+export async function apiDelete<T>(path: string, accessToken: string): Promise<T> {
+  return request<T>(path, { method: "DELETE" }, accessToken);
+}
+
 export { ApiError };

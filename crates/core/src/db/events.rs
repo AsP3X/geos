@@ -22,25 +22,56 @@ pub struct EventBBox {
     pub max_lat: f64,
 }
 
+/// Result ordering for [`list_events`]. Nulls always sort last so events
+/// missing the sort key do not crowd out scored/measured ones. Wire values
+/// match the frontend: `recent`, `impact_desc`, `magnitude_desc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventSort {
+    /// Most recent first (`occurred_at DESC`). Default.
+    #[default]
+    Recent,
+    /// Highest `impact_score` first (nulls last).
+    ImpactDesc,
+    /// Highest `magnitude` first (nulls last).
+    MagnitudeDesc,
+}
+
 /// Tenant-scoped list filters. Queries return the caller's tenant rows plus
 /// the shared [`SYSTEM_TENANT_ID`] public feeds (USGS, NWS, …); private
 /// per-tenant data stays isolated (`tenant-isolation.mdc`).
+///
+/// Multi-value filters (`categories`, `severities`, `sources`) are conjunctive
+/// with the rest of the filter but disjunctive within themselves (an empty vec
+/// means "no constraint on this dimension").
 #[derive(Debug, Clone)]
 pub struct EventListFilter {
     /// Authenticated tenant — required on every query.
     pub tenant_id: Uuid,
     /// Optional viewport bounding box.
     pub bbox: Option<EventBBox>,
-    /// Optional category filter.
-    pub category: Option<Category>,
-    /// Optional severity filter.
-    pub severity: Option<Severity>,
+    /// Categories to include; empty = all categories.
+    pub categories: Vec<Category>,
+    /// Severities to include; empty = all severities.
+    pub severities: Vec<Severity>,
+    /// Source keys to include; empty = all sources.
+    pub sources: Vec<String>,
     /// Include events at or after this time.
     pub occurred_after: Option<DateTime<Utc>>,
     /// Include events at or before this time.
     pub occurred_before: Option<DateTime<Utc>>,
     /// Include only events with `impact_score` at or above this threshold (0–100).
-    pub min_impact: Option<u8>,
+    pub impact_min: Option<u8>,
+    /// Include only events with `impact_score` at or below this threshold (0–100).
+    pub impact_max: Option<u8>,
+    /// Include only events with `magnitude` at or above this value.
+    /// An active bound also implies `magnitude IS NOT NULL`.
+    pub min_magnitude: Option<f64>,
+    /// Include only events with `magnitude` at or below this value.
+    /// An active bound also implies `magnitude IS NOT NULL`.
+    pub max_magnitude: Option<f64>,
+    /// Result ordering.
+    pub sort: EventSort,
     /// Page size (clamped by caller).
     pub limit: i64,
     /// Pagination offset.
@@ -283,8 +314,50 @@ pub async fn upsert_events_backfill(pool: &PgPool, events: &[Event]) -> Result<u
     Ok(total)
 }
 
+/// Paginated event list plus the total number of rows matching the filter
+/// (before `LIMIT`/`OFFSET`), so clients can show "X of Y" and paginate correctly.
+#[derive(Debug, Clone)]
+pub struct EventListResult {
+    /// Events for the requested page.
+    pub items: Vec<Event>,
+    /// Total matching rows for the same filter (ignoring pagination).
+    pub total: i64,
+}
+
+/// Lightweight map coordinate for globe heat/dots (no body, raw, or embedding).
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct EventMapPoint {
+    /// Event id.
+    pub id: Uuid,
+    /// Canonical category (snake_case string).
+    pub category: String,
+    /// Severity tier (snake_case string).
+    pub severity: String,
+    /// Impact score 0–100.
+    pub impact_score: i16,
+    /// Optional source magnitude.
+    pub magnitude: Option<f64>,
+    /// WGS84 latitude.
+    pub lat: f64,
+    /// WGS84 longitude.
+    pub lon: f64,
+    /// When the event occurred.
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Globe map payload: compact points plus the full matching count.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EventMapResult {
+    /// Map points returned (may be capped by `limit`).
+    pub points: Vec<EventMapPoint>,
+    /// Total rows matching the filter (ignoring pagination).
+    pub total: i64,
+    /// Applied page size cap.
+    pub limit: i64,
+}
+
 /// List events for one tenant with optional filters.
-pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<Event>> {
+pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<EventListResult> {
     let mut builder = sqlx::QueryBuilder::new(
         r#"
         SELECT
@@ -295,7 +368,8 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<
             country, region, place_name,
             occurred_at, detected_at, ingested_at,
             status::text AS status, verification_status::text AS verification_status,
-            confidence, tags, url, raw
+            confidence, tags, url, raw,
+            COUNT(*) OVER() AS total_count
         FROM events
         WHERE tenant_id IN ("#,
     );
@@ -305,6 +379,90 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<
     builder.push_bind(SYSTEM_TENANT_ID);
     builder.push(")");
 
+    push_event_filter_predicates(&mut builder, filter);
+    push_event_order(&mut builder, filter);
+    builder.push(" LIMIT ");
+    builder.push_bind(filter.limit);
+    builder.push(" OFFSET ");
+    builder.push_bind(filter.offset);
+
+    let rows = builder
+        .build_query_as::<EventListRow>()
+        .fetch_all(pool)
+        .await?;
+    let total = rows.first().map(|row| row.total_count).unwrap_or(0);
+    let items = rows
+        .into_iter()
+        .map(EventListRow::into_event)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(EventListResult { items, total })
+}
+
+/// Count events matching the filter (same tenant scope and predicates as [`list_events`]).
+pub async fn count_events(pool: &PgPool, filter: &EventListFilter) -> Result<i64> {
+    let mut builder =
+        sqlx::QueryBuilder::new("SELECT COUNT(*)::bigint FROM events WHERE tenant_id IN (");
+    builder.push_bind(filter.tenant_id);
+    builder.push(", ");
+    builder.push_bind(SYSTEM_TENANT_ID);
+    builder.push(")");
+    push_event_filter_predicates(&mut builder, filter);
+    builder
+        .build_query_scalar::<i64>()
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into)
+}
+
+/// Compact map coordinates for the globe (high limit, minimal columns).
+pub async fn list_event_map_points(
+    pool: &PgPool,
+    filter: &EventListFilter,
+) -> Result<EventMapResult> {
+    let total = count_events(pool, filter).await?;
+    let mut builder = sqlx::QueryBuilder::new(
+        r#"
+        SELECT
+            id,
+            category::text AS category,
+            severity::text AS severity,
+            impact_score,
+            magnitude,
+            ST_Y(location::geometry) AS lat,
+            ST_X(location::geometry) AS lon,
+            occurred_at
+        FROM events
+        WHERE tenant_id IN ("#,
+    );
+    builder.push_bind(filter.tenant_id);
+    builder.push(", ");
+    builder.push_bind(SYSTEM_TENANT_ID);
+    builder.push(")");
+
+    push_event_filter_predicates(&mut builder, filter);
+    push_event_order(&mut builder, filter);
+    builder.push(" LIMIT ");
+    builder.push_bind(filter.limit);
+    builder.push(" OFFSET ");
+    builder.push_bind(filter.offset);
+
+    let points = builder
+        .build_query_as::<EventMapPoint>()
+        .fetch_all(pool)
+        .await?;
+    Ok(EventMapResult {
+        points,
+        total,
+        limit: filter.limit,
+    })
+}
+
+/// Append bbox/dimension/range predicates to a builder whose
+/// `WHERE tenant_id IN (...)` clause is already in place.
+fn push_event_filter_predicates(
+    builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+    filter: &EventListFilter,
+) {
     if let Some(bbox) = filter.bbox {
         builder.push(" AND ST_Intersects(location::geometry, ST_MakeEnvelope(");
         builder.push_bind(bbox.min_lon);
@@ -317,16 +475,25 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<
         builder.push(", 4326))");
     }
 
-    if let Some(category) = filter.category {
-        builder.push(" AND category = ");
-        builder.push_bind(pg_category(category));
-        builder.push("::event_category");
+    if !filter.categories.is_empty() {
+        // category = ANY($n::event_category[]) — disjunctive within the dimension.
+        let values: Vec<&'static str> = filter.categories.iter().map(|c| pg_category(*c)).collect();
+        builder.push(" AND category = ANY(");
+        builder.push_bind(values);
+        builder.push("::event_category[])");
     }
 
-    if let Some(severity) = filter.severity {
-        builder.push(" AND severity = ");
-        builder.push_bind(pg_severity(severity));
-        builder.push("::event_severity");
+    if !filter.severities.is_empty() {
+        let values: Vec<&'static str> = filter.severities.iter().map(|s| pg_severity(*s)).collect();
+        builder.push(" AND severity = ANY(");
+        builder.push_bind(values);
+        builder.push("::event_severity[])");
+    }
+
+    if !filter.sources.is_empty() {
+        builder.push(" AND source = ANY(");
+        builder.push_bind(filter.sources.clone());
+        builder.push(")");
     }
 
     if let Some(after) = filter.occurred_after {
@@ -339,20 +506,66 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Vec<
         builder.push_bind(before);
     }
 
-    if let Some(min_impact) = filter.min_impact {
+    if let Some(impact_min) = filter.impact_min {
         builder.push(" AND impact_score >= ");
-        builder.push_bind(i16::from(min_impact));
+        builder.push_bind(i16::from(impact_min));
     }
 
-    builder.push(" ORDER BY occurred_at DESC LIMIT ");
-    builder.push_bind(filter.limit);
-    builder.push(" OFFSET ");
-    builder.push_bind(filter.offset);
+    if let Some(impact_max) = filter.impact_max {
+        builder.push(" AND impact_score <= ");
+        builder.push_bind(i16::from(impact_max));
+    }
 
-    let rows = builder.build_query_as::<EventRow>().fetch_all(pool).await?;
-    rows.into_iter()
-        .map(EventRow::into_event)
-        .collect::<Result<Vec<_>>>()
+    // An active magnitude bound implies the event has a magnitude at all.
+    if filter.min_magnitude.is_some() || filter.max_magnitude.is_some() {
+        builder.push(" AND magnitude IS NOT NULL");
+    }
+    if let Some(min_magnitude) = filter.min_magnitude {
+        builder.push(" AND magnitude >= ");
+        builder.push_bind(min_magnitude);
+    }
+    if let Some(max_magnitude) = filter.max_magnitude {
+        builder.push(" AND magnitude <= ");
+        builder.push_bind(max_magnitude);
+    }
+}
+
+/// Append `ORDER BY` for list/map queries (deterministic tie-break on `occurred_at`).
+fn push_event_order(
+    builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+    filter: &EventListFilter,
+) {
+    // occurred_at stays in the ORDER BY (even for other sorts) to keep results
+    // deterministic and partition-pruning friendly (geospatial-postgis.mdc).
+    match filter.sort {
+        EventSort::Recent => builder.push(" ORDER BY occurred_at DESC"),
+        EventSort::ImpactDesc => {
+            builder.push(" ORDER BY impact_score DESC NULLS LAST, occurred_at DESC")
+        }
+        EventSort::MagnitudeDesc => {
+            builder.push(" ORDER BY magnitude DESC NULLS LAST, occurred_at DESC")
+        }
+    };
+}
+
+/// Distinct `source` values present in the caller's visible events (own tenant
+/// plus the shared public-feed tenant). Drives the dynamic source filter so it
+/// always reflects real data (including `manual` and unregistered sources the
+/// global `sources` catalog would miss). Backed by `events_tenant_source_idx`.
+pub async fn list_event_sources(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<String>> {
+    let sources = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT DISTINCT source
+        FROM events
+        WHERE tenant_id IN ($1, $2)
+        ORDER BY source
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(SYSTEM_TENANT_ID)
+    .fetch_all(pool)
+    .await?;
+    Ok(sources)
 }
 
 /// Fetch one event by id, visible to the caller's tenant or the shared public
@@ -381,6 +594,75 @@ pub async fn get_event(pool: &PgPool, tenant_id: Uuid, event_id: Uuid) -> Result
     .await?;
 
     row.map(|r| r.into_event()).transpose()
+}
+
+#[derive(sqlx::FromRow)]
+struct EventListRow {
+    id: Uuid,
+    tenant_id: Uuid,
+    source: String,
+    source_event_id: String,
+    category: String,
+    severity: String,
+    impact_score: i16,
+    magnitude: Option<f64>,
+    title: Option<String>,
+    summary: Option<String>,
+    body: Option<String>,
+    original_text: Option<String>,
+    translated_text: Option<String>,
+    language: Option<String>,
+    lon: f64,
+    lat: f64,
+    country: Option<String>,
+    region: Option<String>,
+    place_name: Option<String>,
+    occurred_at: DateTime<Utc>,
+    detected_at: Option<DateTime<Utc>>,
+    ingested_at: DateTime<Utc>,
+    status: String,
+    verification_status: String,
+    confidence: f32,
+    tags: Vec<String>,
+    url: Option<String>,
+    raw: serde_json::Value,
+    total_count: i64,
+}
+
+impl EventListRow {
+    fn into_event(self) -> Result<Event> {
+        EventRow {
+            id: self.id,
+            tenant_id: self.tenant_id,
+            source: self.source,
+            source_event_id: self.source_event_id,
+            category: self.category,
+            severity: self.severity,
+            impact_score: self.impact_score,
+            magnitude: self.magnitude,
+            title: self.title,
+            summary: self.summary,
+            body: self.body,
+            original_text: self.original_text,
+            translated_text: self.translated_text,
+            language: self.language,
+            lon: self.lon,
+            lat: self.lat,
+            country: self.country,
+            region: self.region,
+            place_name: self.place_name,
+            occurred_at: self.occurred_at,
+            detected_at: self.detected_at,
+            ingested_at: self.ingested_at,
+            status: self.status,
+            verification_status: self.verification_status,
+            confidence: self.confidence,
+            tags: self.tags,
+            url: self.url,
+            raw: self.raw,
+        }
+        .into_event()
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -593,6 +875,82 @@ mod tests {
             raw: serde_json::json!({"k": "v"}),
             embedding: None,
         }
+    }
+
+    fn base_filter() -> EventListFilter {
+        EventListFilter {
+            tenant_id: Uuid::new_v4(),
+            bbox: None,
+            categories: vec![],
+            severities: vec![],
+            sources: vec![],
+            occurred_after: None,
+            occurred_before: None,
+            impact_min: None,
+            impact_max: None,
+            min_magnitude: None,
+            max_magnitude: None,
+            sort: EventSort::Recent,
+            limit: 50,
+            offset: 0,
+        }
+    }
+
+    // Build just the SQL string (no DB) to assert the query shape per filter.
+    fn list_sql(filter: &EventListFilter) -> String {
+        let mut builder =
+            sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT 1 FROM events WHERE tenant_id IN (");
+        builder.push_bind(filter.tenant_id);
+        builder.push(", ");
+        builder.push_bind(SYSTEM_TENANT_ID);
+        builder.push(")");
+        push_event_filter_predicates(&mut builder, filter);
+        push_event_order(&mut builder, filter);
+        builder.push(" LIMIT ");
+        builder.push_bind(filter.limit);
+        builder.push(" OFFSET ");
+        builder.push_bind(filter.offset);
+        builder.sql().to_owned()
+    }
+
+    #[test]
+    fn empty_multi_filters_add_no_predicate() {
+        let sql = list_sql(&base_filter());
+        assert!(
+            !sql.contains("ANY("),
+            "empty vecs must not emit ANY(): {sql}"
+        );
+        assert!(sql.contains("ORDER BY occurred_at DESC"));
+    }
+
+    #[test]
+    fn multi_value_filters_use_any() {
+        let mut f = base_filter();
+        f.categories = vec![Category::Earthquake, Category::Weather];
+        f.severities = vec![Severity::High];
+        f.sources = vec!["usgs".to_owned()];
+        let sql = list_sql(&f);
+        assert!(sql.contains("category = ANY("), "{sql}");
+        assert!(sql.contains("severity = ANY("), "{sql}");
+        assert!(sql.contains("source = ANY("), "{sql}");
+    }
+
+    #[test]
+    fn magnitude_bound_implies_not_null() {
+        let mut f = base_filter();
+        f.min_magnitude = Some(4.0);
+        let sql = list_sql(&f);
+        assert!(sql.contains("magnitude IS NOT NULL"), "{sql}");
+        assert!(sql.contains("magnitude >= "), "{sql}");
+    }
+
+    #[test]
+    fn sort_modes_use_nulls_last() {
+        let mut f = base_filter();
+        f.sort = EventSort::ImpactDesc;
+        assert!(list_sql(&f).contains("impact_score DESC NULLS LAST"));
+        f.sort = EventSort::MagnitudeDesc;
+        assert!(list_sql(&f).contains("magnitude DESC NULLS LAST"));
     }
 
     #[test]

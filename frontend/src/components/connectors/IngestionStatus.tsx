@@ -104,12 +104,13 @@ function ConnectorRow({
         <div className="tabular-nums">
           {hasTotal ? (
             <>
-              {formatCount(backfill.events_ingested)} / {formatCount(total)} quakes ({percent}%)
+              {formatCount(backfill.events_ingested)} / {formatCount(total)} catalog quakes ({percent}
+              %)
             </>
           ) : counting ? (
             <>
               {formatCount(backfill.events_ingested)} pulled · counting catalog
-              {total && total > 0 ? ` (${formatCount(total)}+)` : "…"}
+              {total && total > 0 ? ` (est. ${formatCount(total)}+)` : "…"}
             </>
           ) : (
             <>{formatCount(backfill.events_ingested)} events pulled</>

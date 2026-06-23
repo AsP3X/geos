@@ -8,6 +8,7 @@ export interface AuthResponse {
   tenant_id: string;
   tenant_slug: string;
   role: string;
+  permissions: string[];
 }
 
 export interface AuthSession {
@@ -18,6 +19,7 @@ export interface AuthSession {
   tenantId: string;
   tenantSlug: string;
   role: string;
+  permissions: string[];
 }
 
 const STORAGE_KEY = "geos.auth.session";
@@ -31,7 +33,16 @@ export function sessionFromResponse(response: AuthResponse): AuthSession {
     tenantId: response.tenant_id,
     tenantSlug: response.tenant_slug,
     role: response.role,
+    permissions: Array.isArray(response.permissions) ? response.permissions : [],
   };
+}
+
+/** Whether the session holds a given permission key. */
+export function sessionHasPermission(
+  session: AuthSession | null,
+  permission: string,
+): boolean {
+  return session?.permissions.includes(permission) ?? false;
 }
 
 export function loadSession(): AuthSession | null {
@@ -46,7 +57,7 @@ export function loadSession(): AuthSession | null {
       typeof parsed.refreshToken === "string" &&
       typeof parsed.expiresAt === "number"
     ) {
-      return parsed;
+      return { ...parsed, permissions: Array.isArray(parsed.permissions) ? parsed.permissions : [] };
     }
   } catch {
     localStorage.removeItem(STORAGE_KEY);

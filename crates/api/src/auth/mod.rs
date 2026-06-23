@@ -113,6 +113,8 @@ pub struct AuthResponse {
     pub tenant_slug: String,
     /// Role key within the tenant.
     pub role: String,
+    /// Permission keys granted to the user in this tenant (drives UI gating).
+    pub permissions: Vec<String>,
 }
 
 /// Authenticate with email/password and optional tenant slug.
@@ -230,7 +232,7 @@ async fn issue_session(
         membership.tenant_id,
         membership.membership_id,
         membership.role_key.clone(),
-        permissions,
+        permissions.clone(),
     );
     let access_token = issue_access_token(jwt_secret, &claims)?;
     let (refresh_token, refresh_hash) = mint_refresh_token();
@@ -246,5 +248,6 @@ async fn issue_session(
         tenant_id: membership.tenant_id,
         tenant_slug: membership.tenant_slug,
         role: membership.role_key,
+        permissions,
     })
 }

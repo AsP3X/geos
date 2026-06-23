@@ -5,6 +5,7 @@ mod connectors;
 mod events;
 mod notify;
 mod pool;
+mod saved_filters;
 mod tasks;
 mod tenants;
 mod users;
@@ -18,12 +19,18 @@ pub use connectors::{
     mark_backfill_complete, reconcile_backfill_window, touch_live_run, ConnectorState,
 };
 pub use events::{
-    get_event, list_events, upsert_event, upsert_events_backfill, EventBBox, EventListFilter,
+    count_events, get_event, list_event_map_points, list_event_sources, list_events, upsert_event,
+    upsert_events_backfill, EventBBox, EventListFilter, EventListResult, EventMapPoint,
+    EventMapResult, EventSort,
 };
 pub use notify::{
     notify_event_upsert, EventNotifyAction, EventNotifyPayload, EVENT_NOTIFY_CHANNEL,
 };
 pub use pool::{connect_pool, run_migrations, PgPool};
+pub use saved_filters::{
+    create_saved_filter, delete_saved_filter, get_user_filter_state, list_saved_filters,
+    update_saved_filter, upsert_user_filter_state, SavedFilter, SavedFilterPayload,
+};
 pub use tasks::{
     claim_task, complete_task, enqueue_task, fail_task, recover_stale_tasks, EnqueueTask,
     WorkerTask, WorkerTaskStatus,

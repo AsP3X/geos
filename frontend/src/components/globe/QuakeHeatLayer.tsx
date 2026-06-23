@@ -3,6 +3,7 @@ import * as THREE from "three";
 import type { Event } from "@/types/event";
 import { GLOBE_RADIUS } from "@/components/globe/geo";
 import { quakeStrength } from "@/components/globe/layers";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 /** Equirectangular heat canvas resolution (smooth enough, cheap to repaint). */
 const TEX_W = 1024;
@@ -118,11 +119,15 @@ function buildHeatTexture(events: Event[]): THREE.CanvasTexture | null {
 interface QuakeHeatLayerProps {
   /** Pre-filtered quake events. */
   events: Event[];
+  layerEpoch: number;
+  loadingMore?: boolean;
 }
 
 /** Texture-painted thermal field mapped onto a thin shell over the globe. */
-export function QuakeHeatLayer({ events }: QuakeHeatLayerProps) {
-  const texture = useMemo(() => buildHeatTexture(events), [events]);
+export function QuakeHeatLayer({ events, layerEpoch, loadingMore = false }: QuakeHeatLayerProps) {
+  const buildDebounceMs = events.length > 2_500 || loadingMore ? 400 : 0;
+  const buildEvents = useDebouncedValue(events, buildDebounceMs);
+  const texture = useMemo(() => buildHeatTexture(buildEvents), [buildEvents]);
 
   useEffect(() => () => texture?.dispose(), [texture]);
 
@@ -131,7 +136,7 @@ export function QuakeHeatLayer({ events }: QuakeHeatLayerProps) {
   }
 
   return (
-    <mesh renderOrder={1}>
+    <mesh key={layerEpoch} renderOrder={1}>
       <sphereGeometry args={[HEAT_RADIUS, 96, 96]} />
       <meshBasicMaterial
         map={texture}

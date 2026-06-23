@@ -3,13 +3,19 @@ import { Instance, Instances } from "@react-three/drei";
 import type { ThreeEvent } from "@react-three/fiber";
 import type { Event } from "@/types/event";
 import { latLonToVector3, MARKER_BASE_RADIUS } from "@/components/globe/geo";
+import { MARKER_DISPLAY_CAP } from "@/components/globe/layers";
 import { severityToColor } from "@/components/globe/severity-colors";
 
 interface EventMarkersProps {
   events: Event[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** Remount instanced geometry only when filters change, not each batch. */
+  layerEpoch: number;
 }
+
+/** Upper bound on instanced markers (matches [`MARKER_DISPLAY_CAP`]). */
+const MARKER_CAP = MARKER_DISPLAY_CAP;
 
 /**
  * Relative marker scale derived from impact (0–100). Bigger, higher-impact
@@ -21,8 +27,9 @@ function impactScale(impact: number): number {
 }
 
 /** Instanced event markers positioned on the globe surface, sized by impact. */
-export function EventMarkers({ events, selectedId, onSelect }: EventMarkersProps) {
-  const limit = Math.max(events.length, 1);
+export function EventMarkers({ events, selectedId, onSelect, layerEpoch }: EventMarkersProps) {
+  const limit = MARKER_CAP;
+  const range = Math.min(events.length, MARKER_CAP);
 
   const positions = useMemo(
     () =>
@@ -42,8 +49,9 @@ export function EventMarkers({ events, selectedId, onSelect }: EventMarkersProps
 
   return (
     <Instances
+      key={layerEpoch}
       limit={limit}
-      range={events.length}
+      range={range}
       onPointerOver={() => setHoverCursor(true)}
       onPointerOut={() => setHoverCursor(false)}
     >

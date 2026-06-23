@@ -4,8 +4,9 @@ import { GlobeEarth } from "@/components/globe/GlobeEarth";
 import { GlobeCountryBorders } from "@/components/globe/GlobeCountryBorders";
 import { EventMarkers } from "@/components/globe/EventMarkers";
 import { QuakeHeatLayer } from "@/components/globe/QuakeHeatLayer";
-import { type GlobeLayers, isQuake } from "@/components/globe/layers";
+import { type GlobeLayers, isQuake, sampleMarkerEvents } from "@/components/globe/layers";
 import { GLOBE_RADIUS } from "@/components/globe/geo";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import type { Event } from "@/types/event";
 
 interface GlobeSceneProps {
@@ -13,11 +14,24 @@ interface GlobeSceneProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   layers: GlobeLayers;
+  layerEpoch: number;
+  /** True while additional map batches are still streaming in. */
+  loadingMore?: boolean;
 }
 
 /** r3f scene graph: starfield, terminator lighting, earth, and event layers. */
-export function GlobeScene({ events, selectedId, onSelect, layers }: GlobeSceneProps) {
+export function GlobeScene({
+  events,
+  selectedId,
+  onSelect,
+  layers,
+  layerEpoch,
+  loadingMore = false,
+}: GlobeSceneProps) {
   const quakeEvents = useMemo(() => events.filter(isQuake), [events]);
+  const renderDebounceMs = quakeEvents.length > 2_500 || loadingMore ? 250 : 0;
+  const debouncedQuakes = useDebouncedValue(quakeEvents, renderDebounceMs);
+  const markerEvents = useMemo(() => sampleMarkerEvents(debouncedQuakes), [debouncedQuakes]);
 
   return (
     <>
@@ -40,9 +54,16 @@ export function GlobeScene({ events, selectedId, onSelect, layers }: GlobeSceneP
 
       <GlobeEarth />
       <GlobeCountryBorders />
-      {layers.quakeHeat ? <QuakeHeatLayer events={quakeEvents} /> : null}
+      {layers.quakeHeat ? (
+        <QuakeHeatLayer events={debouncedQuakes} layerEpoch={layerEpoch} loadingMore={loadingMore} />
+      ) : null}
       {layers.quakeDots ? (
-        <EventMarkers events={quakeEvents} selectedId={selectedId} onSelect={onSelect} />
+        <EventMarkers
+          events={markerEvents}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          layerEpoch={layerEpoch}
+        />
       ) : null}
     </>
   );

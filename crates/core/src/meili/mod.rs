@@ -4,7 +4,7 @@ mod events;
 
 pub use events::{
     ensure_events_index, search_events, upsert_event_document, EventSearchHit, SearchFilters,
-    SearchResults,
+    SearchResults, SearchSort,
 };
 
 use std::sync::Arc;

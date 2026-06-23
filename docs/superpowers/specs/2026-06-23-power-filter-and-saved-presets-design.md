@@ -39,13 +39,14 @@ the server** (with a localStorage cache for instant first paint). Filtering happ
 | Topic | Decision |
 |---|---|
 | Dimensions | time range, multi categories, multi severities, multi sources, impact range (min+max), magnitude range (min+max), sort |
-| Default time range | Last 7 days; custom range entered in local time, converted to UTC |
+| Default time range | **Last 30 days** (chosen so backfilled/seed data older than a week is still visible on first load); custom range entered in local time, converted to UTC |
 | Default categories | **All** categories (list/detail/search show everything; globe draws quakes only until other layers exist) |
 | Magnitude semantics | When a magnitude range is active, events with **no** magnitude are excluded |
 | Sort options | `recent` (occurred_at desc, default), `impact_desc`, `magnitude_desc`; nulls sort last |
 | Result volume | **Load-more** pagination via existing `limit`/`offset` |
-| Source options | New **dynamic endpoint** returning distinct sources present in the tenant's data |
-| Search integration | Filters apply to search where the Meili index supports it; `source` + `occurred_at` added as filterable; search sort = recent + impact only (magnitude not indexed, so it does not constrain search) |
+| Impact param naming | API gains `impact_min`/`impact_max`; the existing **`min_impact`** param is kept as a **back-compat alias** for `impact_min` (events + search) |
+| Source options | New **dynamic endpoint** returning **distinct `source` values present in the tenant's visible events** (covers `manual` and unregistered sources the global `sources` catalog would miss); backed by a supporting index |
+| Search integration | Filters apply to search where the Meili index supports it. Time range **does** constrain search: a numeric `occurred_at_unix` field is added to the search document (Meili range filters require a numeric attribute — an RFC3339 string cannot be range-filtered). `source` + `occurred_at_unix` become filterable; search sort = recent + impact only (magnitude not indexed, so it does not constrain search) |
 | Presets storage | New `saved_filters` table, **per-user private**, RBAC `saved_filters.read`/`saved_filters.manage`, audit-logged, overwrite-on-name-conflict |
 | Preset contents | Captures the **entire** filter incl. time range and sort (fully reproducible view); JSON carries a `version` |
 | Active-filter persistence | New `user_filter_state` table (per-user jsonb, versioned) is the **source of truth**; localStorage caches it for instant first paint and is reconciled with the server on load |
@@ -78,8 +79,9 @@ interface EventFilters {
 ```
 
 Defaults: all categories/severities/sources, impact 0–100, magnitude null/null,
-`timeRange = "7d"`, `sort = "recent"`. Unknown/invalid values are sanitized to defaults
-on load (versioned migration of stored JSON).
+`timeRange = "30d"`, `sort = "recent"`. Stored JSON starts at `version = 1`; on load the
+sanitizer drops unknown keys, clamps out-of-range values, and resets any payload whose
+`version` it does not recognize to the defaults (forward-compatible).
 
 ## 5. Backend — events query (`crates/core/src/db/events.rs`, `crates/api/src/routes/events.rs`)
 
@@ -94,13 +96,18 @@ on load (versioned migration of stored JSON).
   Preserve `occurred_at` constraints for partition pruning.
 - Extend `ListEventsQuery`: accept comma-separated `category`, `severity`, `source`,
   plus `impact_min`, `impact_max`, `min_magnitude`, `max_magnitude`, `sort`. Single values
-  still parse (backward compatible). Validate ranges (min ≤ max, impact 0–100, known sort).
+  still parse (backward compatible). **`min_impact` is retained as an alias for `impact_min`**
+  (existing callers and the current frontend keep working); when both are sent, `impact_min`
+  wins. Validate ranges (min ≤ max, impact 0–100, known sort).
 - **No `Event` schema change**, so the canonical four-artifact sync does not apply.
 
 ### Indexes (`migrations/0011_events_filter_sort_indexes.sql`)
-Add btree indexes to keep sort fast across monthly partitions, e.g.
-`(tenant_id, impact_score DESC)` and `(magnitude DESC)` (per-partition strategy consistent
-with `geospatial-postgis.mdc`).
+Add btree indexes to keep sort fast across monthly partitions. Because every query is
+tenant-scoped (`tenant_id IN (caller, system)`), the sort indexes must be **tenant-prefixed**
+so the planner uses them: `(tenant_id, impact_score DESC)` and a **partial**
+`(tenant_id, magnitude DESC) WHERE magnitude IS NOT NULL` (matching the magnitude-range
+predicate). Declared on the partitioned parent so partitions inherit them
+(`geospatial-postgis.mdc`).
 
 ## 6. Backend — distinct sources endpoint
 
@@ -108,23 +115,46 @@ with `geospatial-postgis.mdc`).
 system tenant), gated by `events.read`. Returns the distinct `source` values present in the
 visible data so the source filter is always accurate (covers connector keys and `manual`).
 
+Deliberately uses `SELECT DISTINCT source FROM events WHERE tenant_id IN (...)` rather than
+the global `sources` catalog table (`migrations/0003`), because the catalog is a registry of
+configured connectors and does not include `manual` events or reflect what a given tenant
+actually has. To keep the scan cheap on the partitioned table, add a supporting
+`(tenant_id, source)` btree index in `0011` (a loose index scan / distinct over this index is
+far cheaper than a seq scan); the result set is naturally tiny.
+
 ## 7. Backend — search (`crates/api/src/routes/search.rs`, `crates/core/src/meili`)
 
 - Extend `SearchQuery` + `SearchFilters` to accept multi `category`/`severity`, `sources`,
-  `impact_min`/`impact_max`, and time range; build Meili filter expressions
-  (`category IN [...]`, `source IN [...]`, `occurred_at >= …`, etc.).
-- Add `source` to `EventDocument` and update the index settings:
-  filterable `["tenant_id","category","severity","impact_score","occurred_at","source"]`;
-  sortable stays `["occurred_at","impact_score"]`.
+  `impact_min`/`impact_max` (with `min_impact` alias), and time range; build Meili filter
+  expressions (`category IN [...]`, `source IN [...]`, `occurred_at_unix >= …`, etc.).
+- **`source` already exists in `EventDocument` and is already a *searchable* attribute** — no
+  field is added for it. The required change is the **filterable** list (currently
+  `["tenant_id","category","severity","impact_score"]`).
+- **Add a numeric `occurred_at_unix: i64` (epoch seconds) field to `EventDocument`.** Meili
+  range operators (`>=`/`<=`) only work on numeric attributes; the existing RFC3339-string
+  `occurred_at` cannot be range-filtered. The human-readable `occurred_at` stays for display
+  and sorting; `occurred_at_unix` is what the time-range filter targets.
+- Update index settings: filterable
+  `["tenant_id","category","severity","impact_score","source","occurred_at_unix"]`;
+  sortable stays `["occurred_at","impact_score"]`. Note `ensure_events_index` runs in **both**
+  `geos-api` and `geos-workers`; changing filterable attrs triggers a Meili reindex of
+  existing documents (handled by Meili).
 - Search sort offers `recent` + `impact_desc` only; magnitude is not indexed and is not
   applied to search.
 
 ## 8. Backend — saved filters + active filter state
 
+FK + cascade convention follows `migrations/0003`/`0005`: both tables reference
+`tenants(id)` and `users(id)` with `ON DELETE CASCADE` so tenant/user deletion (incl. GDPR
+erasure) removes this per-user data automatically. Both tables are also added to the
+documented erasure path (`privacy-gdpr.mdc`) so cleanup is explicit, not only implicit.
+
 ### `migrations/0009_saved_filters.sql`
 ```
 saved_filters(
-  id uuid pk, tenant_id uuid not null, user_id uuid not null,
+  id uuid pk, 
+  tenant_id uuid not null references tenants(id) on delete cascade,
+  user_id   uuid not null references users(id)   on delete cascade,
   name text not null, filters jsonb not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -136,7 +166,8 @@ index (tenant_id, user_id)
 ### `migrations/0010_user_filter_state.sql`
 ```
 user_filter_state(
-  tenant_id uuid not null, user_id uuid not null,
+  tenant_id uuid not null references tenants(id) on delete cascade,
+  user_id   uuid not null references users(id)   on delete cascade,
   filters jsonb not null,
   updated_at timestamptz not null default now(),
   primary key (tenant_id, user_id)
@@ -156,6 +187,9 @@ scoped.
 - `DELETE /api/v1/saved-filters/{id}` — delete (`saved_filters.manage`, ownership check).
 - `GET    /api/v1/filter-state` — read caller's active filter.
 - `PUT    /api/v1/filter-state` — upsert caller's active filter.
+- **filter-state gating:** any **authenticated** user, scoped to their own
+  `(tenant_id, user_id)` row — **no dedicated permission key** (it is private per-user UI
+  state, not tenant data). It is *not* gated by `saved_filters.*` or `events.read`.
 - Cross-tenant/cross-user objects return **404** (no existence leak).
 - Mutations write audit rows: `saved_filter.create|update|delete`. (Active-filter upserts
   are high-frequency UI state and are exempt from audit.)
@@ -163,9 +197,17 @@ scoped.
 
 ## 9. Backend — session permissions (`crates/api` auth, `frontend` auth-storage)
 
-Login/refresh responses include the authenticated user's permission keys (and role).
-`AuthSession` + `sessionFromResponse` parse and store them. The UI gates preset Save/
-Update/Delete on `saved_filters.manage`; apply is allowed with `saved_filters.read`.
+Scope note: the access JWT **already carries** `permissions: Vec<String>` and `role`
+(`AccessClaims`, surfaced via `AuthContext`), so this is a small surface change, not a new
+auth contract:
+- **Backend:** add `permissions: Vec<String>` to the `AuthResponse` body struct in
+  `crates/api/src/auth/mod.rs` (`role` is already present); populate from the same
+  `permissions_for_role` lookup already used to build the claims.
+- **Frontend:** add `permissions` to `AuthResponse`/`AuthSession` and `sessionFromResponse`
+  in `frontend/src/lib/auth-storage.ts`.
+
+The UI gates preset Save/Update/Delete on `saved_filters.manage`; apply is allowed with
+`saved_filters.read`.
 
 ## 10. Frontend
 
@@ -189,6 +231,11 @@ Update/Delete on `saved_filters.manage`; apply is allowed with `saved_filters.re
 
 ## 11. Live stream behavior
 
+The live stream (`crates/api/src/routes/stream.rs`) already emits the **full canonical
+`Event`** (`StreamEnvelope { kind: "event.upsert", event }`), so the client has every field
+it needs (category, severity, source, impact, magnitude, occurred_at) to evaluate the active
+filter locally — **no stream payload change is required**.
+
 Incoming WebSocket events are filtered client-side against the active filter. When
 `sort = "recent"`, matching events auto-insert at the correct position. For other sorts,
 matching events increment a "new events" badge that, when clicked, refetches the current
@@ -208,6 +255,10 @@ user can still toggle an *allowed* layer off manually.
   Cross-tenant/cross-user access returns 404. Add isolation tests (`tenant-isolation.mdc`).
 - **RBAC**: saved-filters endpoints gated by `saved_filters.read`/`manage`; deny tests.
 - **Audit**: `saved_filter.create|update|delete` write audit rows (`audit-log-coverage.mdc`).
+  `filter-state` upserts are high-frequency private UI state and are exempt from audit.
+- **Erasure (GDPR)**: `saved_filters` and `user_filter_state` carry per-user data; their
+  `ON DELETE CASCADE` FKs to `tenants`/`users` remove them on tenant/user deletion, and both
+  tables are listed in the documented erasure path (`privacy-gdpr.mdc`).
 - **No PII/secrets** in logs or error bodies.
 
 ## 14. Testing
@@ -216,24 +267,38 @@ user can still toggle an *allowed* layer off manually.
   sort (incl. nulls-last); distinct-sources query; saved-filters CRUD + user_filter_state
   upsert with tenant+user isolation.
 - **API**: saved-filters CRUD + RBAC grant/deny + cross-tenant 404; filter-state upsert
-  isolation; events/search param parsing + validation; auth response includes permissions.
-- **Search/Meili**: filterable-attribute settings include `source`/`occurred_at`.
+  isolation **and that it works for any authenticated user without a `saved_filters.*`
+  permission**; events/search param parsing + validation incl. the **`min_impact` →
+  `impact_min` alias** (and `impact_min` winning when both are sent); auth response includes
+  permissions.
+- **Search/Meili**: filterable-attribute settings include `source` + `occurred_at_unix`;
+  time-range filter actually narrows results (numeric epoch, not string compare).
+- **Migrations**: deleting a user/tenant cascades to `saved_filters` + `user_filter_state`.
 - **Frontend**: `pnpm exec tsc --noEmit`, `pnpm lint`, `pnpm build`; smokes — apply filter,
   save/apply/delete preset, reload persists from server, layer sync, live "new events" badge.
 
 ## 15. Migrations summary
 
-- `0009_saved_filters.sql` — presets table.
-- `0010_user_filter_state.sql` — per-user active filter.
-- `0011_events_filter_sort_indexes.sql` — sort-supporting indexes.
+- `0009_saved_filters.sql` — presets table (FKs to `tenants`/`users`, `ON DELETE CASCADE`).
+- `0010_user_filter_state.sql` — per-user active filter (same FK/cascade convention).
+- `0011_events_filter_sort_indexes.sql` — sort-supporting indexes
+  `(tenant_id, impact_score DESC)` and partial `(tenant_id, magnitude DESC) WHERE magnitude
+  IS NOT NULL`, plus `(tenant_id, source)` to back the distinct-sources endpoint. Declared on
+  the partitioned parent.
 
 All are new forward migrations; no shipped migration is edited (`api-sqlx-migrations.mdc`).
 
 ## 16. Risks / notes
 
-- Sorting by impact/magnitude across many partitions can be costly; indexes in §5 mitigate,
-  but very large tenants may need per-partition tuning later.
+- Sorting by impact/magnitude across many partitions can be costly; the tenant-prefixed
+  indexes in §5 mitigate, but very large tenants may need per-partition tuning later.
 - Default = all categories means the globe shows quakes only while the list shows everything;
   acceptable until non-quake layers exist (and the event counter reflects the full list).
-- Adding permissions to the session is a minor auth-contract change; the frontend
-  `ApiError`/session parsing is updated in the same change set.
+- Surfacing permissions in the session is a **minor** change: the JWT already carries
+  `permissions`/`role`; only the `AuthResponse` body and the frontend session parsing change
+  (same change set).
+- The distinct-sources endpoint does a `DISTINCT` over a partitioned table; the
+  `(tenant_id, source)` index keeps it cheap and the result set is tiny, but watch it on very
+  large tenants.
+- Adding `occurred_at_unix` to the search document requires a Meili reindex when settings
+  change; Meili handles this, but the first deploy reprocesses existing documents.
