@@ -85,13 +85,23 @@ The frontend reads the public API URL at **container runtime** via `GEOS_API_BAS
 | NPM layout | `GEOS_API_BASE_URL` | Notes |
 | --- | --- | --- |
 | One host, `/api` → geos-api | _(empty)_ | Browser calls same-origin `/api/v1/...`. Either NPM proxies `/api` to `geos-api:8080`, or NPM points at the frontend container and its nginx proxies `/api` internally. |
-| Separate API host | `https://api.your-domain.example` | Browser calls the API directly (REST, WebSocket, tile imagery). CORS is permissive today. |
+| Separate API host | `https://api.your-domain.example` | Browser calls the API directly (REST, WebSocket, tile imagery). Set `GEOS_CORS_ORIGINS` to the frontend origin (see below). |
 
 After changing `.env`, restart the frontend container:
 
 ```bash
 docker compose up -d frontend
 ```
+
+When frontend and API are on **different public hosts**, the API must allow the
+frontend origin via CORS. Set on the **api** service:
+
+```bash
+GEOS_CORS_ORIGINS=https://geos.yourdomain.com
+```
+
+Then restart the API: `docker compose up -d api`. In NPM, ensure the API proxy
+forwards **OPTIONS** preflight requests (Custom Location → enable if needed).
 
 ## Dev scripts
 

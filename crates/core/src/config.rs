@@ -46,6 +46,9 @@ pub struct Config {
     pub tiles_max_zoom: u32,
     /// Socket address for the HTTP API (e.g. `0.0.0.0:8080`).
     pub bind_addr: String,
+    /// Browser origins allowed to call the API cross-origin (e.g. the public
+    /// frontend URL behind NPM). Empty = permissive CORS for local dev.
+    pub cors_origins: Vec<String>,
 }
 
 impl Config {
@@ -70,6 +73,7 @@ impl Config {
             tiles_max_zoom: optional_zoom("TILES_MAX_ZOOM", DEFAULT_TILES_MAX_ZOOM)?,
             bind_addr: std::env::var("GEOS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:8080".to_owned()),
+            cors_origins: optional_csv("GEOS_CORS_ORIGINS"),
         })
     }
 }
@@ -119,5 +123,38 @@ fn optional_zoom(name: &str, default: u32) -> Result<u32> {
             .parse::<u32>()
             .map_err(|_| AppError::Config(format!("{name} must be a non-negative integer"))),
         _ => Ok(default),
+    }
+}
+
+// Human: Parses a comma-separated env var into a list of trimmed tokens; empty or
+// unset yields an empty vec (caller decides the default behavior).
+// Agent: READS env var `name`; SPLITS on comma; TRIMS; FILTERS empty entries.
+fn optional_csv(name: &str) -> Vec<String> {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => value
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_csv_splits_and_trims() {
+        std::env::set_var("GEOS_TEST_CSV", " https://a.example , ,https://b.example ");
+        assert_eq!(
+            optional_csv("GEOS_TEST_CSV"),
+            vec![
+                "https://a.example".to_owned(),
+                "https://b.example".to_owned()
+            ]
+        );
+        std::env::remove_var("GEOS_TEST_CSV");
     }
 }

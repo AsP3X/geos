@@ -5,7 +5,8 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use tower_http::cors::{Any, CorsLayer};
+use geos_core::config::Config;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::middleware::auth::require_auth;
@@ -15,6 +16,8 @@ use crate::state::AppState;
 
 /// Build the full HTTP router with middleware and `/api/v1` routes.
 pub fn build_router(state: AppState) -> Router {
+    let cors = build_cors(&state.config);
+
     let public = Router::new()
         .route("/health", get(health::health))
         .route("/api/v1/auth/register", post(auth::register))
@@ -53,13 +56,28 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(public)
         .merge(protected)
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
         .layer(middleware::from_fn(assign_request_context))
         .layer(TraceLayer::new_for_http())
+        // Outermost: answer OPTIONS preflight and attach ACAO before any inner
+        // middleware or handler runs (required for split-host NPM deploys).
+        .layer(cors)
         .with_state(state)
+}
+
+/// CORS policy for browser clients. When `GEOS_CORS_ORIGINS` is unset, allow any
+/// origin (local dev). When set, only listed origins (e.g. the public frontend
+/// URL) may call the API cross-origin.
+fn build_cors(cfg: &Config) -> CorsLayer {
+    if cfg.cors_origins.is_empty() {
+        return CorsLayer::permissive();
+    }
+    let origins: Vec<_> = cfg
+        .cors_origins
+        .iter()
+        .filter_map(|origin| origin.parse().ok())
+        .collect();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods(Any)
+        .allow_headers(Any)
 }

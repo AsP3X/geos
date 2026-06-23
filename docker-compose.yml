@@ -76,6 +76,9 @@ services:
       IMAGERY_UPSTREAM_URL: ${IMAGERY_UPSTREAM_URL:-https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg}
       GEOS_BIND_ADDR: 0.0.0.0:8080
       RUST_LOG: ${RUST_LOG:-info}
+      # Comma-separated browser origins allowed to call this API cross-origin
+      # (required when frontend and API are on different public hosts).
+      GEOS_CORS_ORIGINS: ${GEOS_CORS_ORIGINS:-}
     ports:
       - "${API_PORT:-8080}:8080"
     depends_on:
