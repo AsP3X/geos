@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ ! -f .env ]; then
-  echo "No .env found — copy .env.example to .env and fill in values first." >&2
+  echo "No .env found — run ./scripts/gen-env.sh first." >&2
   exit 1
 fi
 

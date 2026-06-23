@@ -41,8 +41,8 @@ git clone --recurse-submodules <repo-url>
 # or, in an existing clone:
 ./scripts/submodule-init.sh
 
-# 2. Configure environment
-cp .env.example .env        # then edit secrets (min 32 chars where noted)
+# 2. Configure environment (generates random secrets for placeholder keys)
+./scripts/gen-env.sh
 
 # 3. Install git hooks (optional but recommended)
 lefthook install
@@ -107,6 +107,7 @@ forwards **OPTIONS** preflight requests (Custom Location → enable if needed).
 
 | Script | Purpose |
 | --- | --- |
+| `scripts/gen-env.sh` | Create `.env` from `.env.example` and generate random secrets |
 | `scripts/dev.sh` | Start data services + API/workers/frontend for local dev |
 | `scripts/db.sh` | Manage the dev Postgres container (`up`/`down`/`logs`/`psql`) |
 | `scripts/db-backup.sh` / `scripts/db-restore.sh` | Back up / restore the database |
