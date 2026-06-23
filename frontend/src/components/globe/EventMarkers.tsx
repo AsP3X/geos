@@ -1,78 +1,98 @@
-import { useCallback, useMemo } from "react";
-import { Instance, Instances } from "@react-three/drei";
-import type { ThreeEvent } from "@react-three/fiber";
+import { useMemo, useRef } from "react";
+import type * as THREE from "three";
+import { Html } from "@react-three/drei";
+import { useFrame, useThree } from "@react-three/fiber";
 import type { Event } from "@/types/event";
-import { latLonToVector3, MARKER_BASE_RADIUS } from "@/components/globe/geo";
-import { MARKER_DISPLAY_CAP } from "@/components/globe/layers";
+import { latLonToVector3, MARKER_BASE_RADIUS, MARKER_SURFACE_RADIUS } from "@/components/globe/geo";
 import { severityToColor } from "@/components/globe/severity-colors";
+import { ScreenScaledInstances, type ScaledItem } from "@/components/globe/ScreenScaledInstances";
 
 interface EventMarkersProps {
+  /** Quakes rendered as individual spheres (cluster singletons). */
   events: Event[];
-  selectedId: string | null;
+  /** World position of the selected quake, or null. Decoupled from `events`
+   * so a selection inside a cluster still shows a ring. */
+  selectedPosition: THREE.Vector3 | null;
   onSelect: (id: string) => void;
-  /** Remount instanced geometry only when filters change, not each batch. */
-  layerEpoch: number;
 }
 
-/** Upper bound on instanced markers (matches [`MARKER_DISPLAY_CAP`]). */
-const MARKER_CAP = MARKER_DISPLAY_CAP;
+/** Fixed instance capacity; the draw count tracks the active singletons. */
+const SINGLE_CAP = 20_000;
+/** Screen-radius clamp (CSS px) for individual quake dots. */
+const DOT_MIN_PX = 2.2;
+const DOT_MAX_PX = 9;
+
+/** Natural world radius from impact (0–100); higher impact reads larger. */
+function impactWorld(impact: number): number {
+  const scale = 0.6 + (Math.min(Math.max(impact, 0), 100) / 100) * 1.1;
+  return MARKER_BASE_RADIUS * scale;
+}
 
 /**
- * Relative marker scale derived from impact (0–100). Bigger, higher-impact
- * events read as larger dots so the globe conveys "where + how significant"
- * at a glance; a floor keeps minor events tappable.
+ * Fixed-size screen-space ring around the selected dot. Rendered as a DOM
+ * overlay (not a mesh on the globe surface) so it always faces the camera, keeps
+ * a constant pixel size at any zoom, and draws on top — but it is hidden while
+ * the selected quake is on the far (occluded) hemisphere.
  */
-function impactScale(impact: number): number {
-  return 0.55 + (Math.min(Math.max(impact, 0), 100) / 100) * 1.0;
+function SelectionRing({ position }: { position: THREE.Vector3 }) {
+  const ringRef = useRef<HTMLDivElement>(null);
+  const camera = useThree((state) => state.camera);
+  const dir = useMemo(() => position.clone().normalize(), [position]);
+
+  useFrame(() => {
+    const el = ringRef.current;
+    if (!el) {
+      return;
+    }
+    const facing =
+      dir.x * camera.position.x + dir.y * camera.position.y + dir.z * camera.position.z >
+      MARKER_SURFACE_RADIUS;
+    el.style.opacity = facing ? "1" : "0";
+  });
+
+  return (
+    <Html position={position} center zIndexRange={[50, 30]} style={{ pointerEvents: "none" }}>
+      <div
+        ref={ringRef}
+        style={{
+          width: 26,
+          height: 26,
+          borderRadius: "50%",
+          border: "2px solid rgba(255,255,255,0.95)",
+          boxShadow: "0 0 6px rgba(255,255,255,0.65), inset 0 0 4px rgba(255,255,255,0.5)",
+          transition: "opacity 120ms linear",
+        }}
+      />
+    </Html>
+  );
 }
 
-/** Instanced event markers positioned on the globe surface, sized by impact. */
-export function EventMarkers({ events, selectedId, onSelect, layerEpoch }: EventMarkersProps) {
-  const limit = MARKER_CAP;
-  const range = Math.min(events.length, MARKER_CAP);
-
-  const positions = useMemo(
+/** Instanced, screen-size-clamped sphere markers for individual quakes. */
+export function EventMarkers({ events, selectedPosition, onSelect }: EventMarkersProps) {
+  const items = useMemo<ScaledItem[]>(
     () =>
-      events.map((event) =>
-        latLonToVector3(event.location.lat, event.location.lon),
-      ),
+      events.slice(0, SINGLE_CAP).map((event) => ({
+        id: event.id,
+        position: latLonToVector3(event.location.lat, event.location.lon, MARKER_SURFACE_RADIUS),
+        color: severityToColor(event.severity),
+        baseWorld: impactWorld(event.impact_score),
+      })),
     [events],
   );
 
-  const setHoverCursor = useCallback((hovering: boolean) => {
-    document.body.style.cursor = hovering ? "pointer" : "";
-  }, []);
-
-  if (events.length === 0) {
-    return null;
-  }
-
   return (
-    <Instances
-      key={layerEpoch}
-      limit={limit}
-      range={range}
-      onPointerOver={() => setHoverCursor(true)}
-      onPointerOut={() => setHoverCursor(false)}
-    >
-      <sphereGeometry args={[MARKER_BASE_RADIUS, 12, 12]} />
-      <meshBasicMaterial toneMapped={false} />
-      {events.map((event, index) => {
-        const selected = event.id === selectedId;
-        const scale = impactScale(event.impact_score) * (selected ? 1.5 : 1);
-        return (
-          <Instance
-            key={event.id}
-            position={positions[index]}
-            scale={scale}
-            color={severityToColor(event.severity)}
-            onClick={(clickEvent: ThreeEvent<MouseEvent>) => {
-              clickEvent.stopPropagation();
-              onSelect(event.id);
-            }}
-          />
-        );
-      })}
-    </Instances>
+    <>
+      <ScreenScaledInstances
+        items={items}
+        capacity={SINGLE_CAP}
+        segments={8}
+        minPx={DOT_MIN_PX}
+        maxPx={DOT_MAX_PX}
+        renderOrder={2}
+        onClickItem={(id) => onSelect(id)}
+      />
+
+      {selectedPosition ? <SelectionRing position={selectedPosition} /> : null}
+    </>
   );
 }

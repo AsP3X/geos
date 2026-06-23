@@ -1,10 +1,11 @@
-import { Suspense, useMemo } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, PerformanceMonitor } from "@react-three/drei";
 import type { Event } from "@/types/event";
 import { GlobeScene } from "@/components/globe/GlobeScene";
+import type { GlobeCluster } from "@/components/globe/useScreenClusters";
 import type { GlobeLayers } from "@/components/globe/layers";
-import { isQuake, MARKER_DISPLAY_CAP } from "@/components/globe/layers";
+import { isQuake } from "@/components/globe/layers";
 import {
   CAMERA_DISTANCE,
   CAMERA_HEIGHT,
@@ -16,6 +17,10 @@ interface GlobeViewportProps {
   events: Event[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** Open a clicked cluster's members in the sidebar list. */
+  onSelectCluster?: (cluster: GlobeCluster) => void;
+  /** Clear the current selection (click on empty space / globe). */
+  onClearSelection?: () => void;
   layers: GlobeLayers;
   /** Total quakes matching the active filter (may exceed loaded points). */
   globeTotal?: number;
@@ -32,19 +37,21 @@ export function GlobeViewport({
   events,
   selectedId,
   onSelect,
+  onSelectCluster,
+  onClearSelection,
   layers,
   globeTotal,
   globeLoading,
   globeLoadingMore,
   globeEpoch = 0,
 }: GlobeViewportProps) {
+  // Render resolution: capped on retina, dropped further if the GPU falls behind.
+  const [dpr, setDpr] = useState(1.5);
   const quakeCount = events.filter(isQuake).length;
   const total = Math.max(globeTotal ?? 0, quakeCount);
-  const dotsShown = Math.min(quakeCount, MARKER_DISPLAY_CAP);
   const stillLoading = Boolean(globeLoading && quakeCount === 0);
   const loadingMore = Boolean(globeLoadingMore);
-  const heatTruncated = total > quakeCount;
-  const dotsSampled = quakeCount > MARKER_DISPLAY_CAP;
+  const partial = total > quakeCount;
 
   const statusLabel = useMemo(() => {
     if (stillLoading) {
@@ -55,42 +62,32 @@ export function GlobeViewport({
     if (quakeCount === 0) {
       return "No quakes match filters";
     }
-    let label: string;
-    if (loadingMore || heatTruncated) {
-      label = `${quakeCount.toLocaleString()} / ${total.toLocaleString()} quakes loaded`;
-      if (loadingMore) {
-        label += "…";
-      }
-    } else {
-      label = `${total.toLocaleString()} quake${total === 1 ? "" : "s"}`;
+    if (loadingMore || partial) {
+      return `${quakeCount.toLocaleString()} / ${total.toLocaleString()} quakes${loadingMore ? "…" : ""}`;
     }
-    if (dotsSampled && layers.quakeDots) {
-      label += ` · ${dotsShown.toLocaleString()} dots`;
-    }
-    return label;
-  }, [
-    stillLoading,
-    total,
-    quakeCount,
-    loadingMore,
-    heatTruncated,
-    dotsSampled,
-    layers.quakeDots,
-    dotsShown,
-  ]);
+    return `${total.toLocaleString()} quake${total === 1 ? "" : "s"}`;
+  }, [stillLoading, total, quakeCount, loadingMore, partial]);
   return (
     <div className="relative size-full min-h-full overflow-hidden bg-[#05070d]">
       <Canvas
-        camera={{ position: [0, CAMERA_HEIGHT, CAMERA_DISTANCE], fov: 42, near: 0.1, far: 200 }}
-        dpr={[1, 2]}
-        gl={{ antialias: true, alpha: false }}
+        camera={{ position: [0, CAMERA_HEIGHT, CAMERA_DISTANCE], fov: 42, near: 0.02, far: 200 }}
+        dpr={dpr}
+        gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+        onPointerMissed={() => onClearSelection?.()}
       >
         <color attach="background" args={["#05070d"]} />
+        <PerformanceMonitor
+          onDecline={() => setDpr(1)}
+          onIncline={() => setDpr(1.5)}
+          flipflops={3}
+          onFallback={() => setDpr(1)}
+        />
         <Suspense fallback={null}>
           <GlobeScene
             events={events}
             selectedId={selectedId}
             onSelect={onSelect}
+            onSelectCluster={(cluster) => onSelectCluster?.(cluster)}
             layers={layers}
             layerEpoch={globeEpoch}
             loadingMore={globeLoadingMore}
@@ -100,8 +97,6 @@ export function GlobeViewport({
           enablePan={false}
           enableDamping
           dampingFactor={0.08}
-          autoRotate
-          autoRotateSpeed={0.32}
           minDistance={ORBIT_MIN_DISTANCE}
           maxDistance={ORBIT_MAX_DISTANCE}
           rotateSpeed={0.45}

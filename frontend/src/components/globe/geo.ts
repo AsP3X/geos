@@ -14,12 +14,17 @@ export const GLOBE_RADIUS = 3;
 export const CAMERA_HEIGHT = GLOBE_RADIUS * 0.2;
 /** Default camera distance from globe center; lower ratio = larger on screen. */
 export const CAMERA_DISTANCE = GLOBE_RADIUS * 2.35;
-/** Closest the camera may orbit (just above the surface). */
-export const ORBIT_MIN_DISTANCE = GLOBE_RADIUS * 1.55;
+/** Closest the camera may orbit — nearly skimming the surface for deep zoom so
+ * dense quake clusters separate into individual dots. */
+export const ORBIT_MIN_DISTANCE = GLOBE_RADIUS * 1.035;
 /** Farthest the camera may orbit out. */
 export const ORBIT_MAX_DISTANCE = GLOBE_RADIUS * 6;
 /** Base radius of an event marker dot relative to the globe. */
 export const MARKER_BASE_RADIUS = GLOBE_RADIUS * 0.0085;
+/** World-space pick tolerance for point-cloud markers (a touch wider than a dot). */
+export const MARKER_PICK_THRESHOLD = MARKER_BASE_RADIUS * 1.4;
+/** Radius at which quake markers/clusters sit, just above the opaque earth. */
+export const MARKER_SURFACE_RADIUS = GLOBE_RADIUS * 1.002;
 
 /**
  * Convert WGS84 lat/lon to a unit direction on the globe surface.

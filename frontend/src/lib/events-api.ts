@@ -160,6 +160,11 @@ export function mapPointToEvent(point: EventMapPoint): Event {
   };
 }
 
+/** Fetch one full canonical event by id (e.g. after clicking a globe dot). */
+export async function getEvent(accessToken: string, id: string): Promise<Event> {
+  return apiGet<Event>(`/api/v1/events/${id}`, accessToken);
+}
+
 export interface EventSourcesResponse {
   sources: string[];
 }

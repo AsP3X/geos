@@ -7,6 +7,7 @@ import { FilterPanel } from "@/components/filters/FilterPanel";
 import { eventMatchesFilters, filtersAreActive, type EventFilters } from "@/components/filters/filters";
 import { LayersRail } from "@/components/globe/LayersRail";
 import { DEFAULT_LAYERS, isQuake, type GlobeLayers } from "@/components/globe/layers";
+import type { GlobeCluster } from "@/components/globe/useScreenClusters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConnectorStatus } from "@/hooks/useConnectorStatus";
@@ -19,6 +20,7 @@ import {
   GLOBE_MAP_BATCH_PAUSE_MS,
   GLOBE_MAP_BATCH_SIZE,
   GLOBE_MAP_MAX_POINTS,
+  getEvent,
   listEvents,
   listEventMapPoints,
   listEventSources,
@@ -159,10 +161,56 @@ export function CommandCenterPage() {
     intervalMs: ingestionOpen ? 250 : 10_000,
   });
 
-  const selectedEvent = useMemo(
-    () => events.find((event) => event.id === selectedId) ?? null,
-    [events, selectedId],
-  );
+  // Full detail for a globe-clicked dot that isn't in the paginated list.
+  const [selectedDetail, setSelectedDetail] = useState<Event | null>(null);
+  // Members of a clicked cluster, shown in the left list for disambiguation.
+  const [clusterFocus, setClusterFocus] = useState<{ events: Event[]; count: number } | null>(null);
+
+  const handleSelectCluster = useCallback((cluster: GlobeCluster) => {
+    setClusterFocus({ events: cluster.members, count: cluster.count });
+    setLeftOpen(true);
+    setSelectedId(cluster.members[0]?.id ?? null);
+  }, []);
+
+  const selectedEvent = useMemo(() => {
+    if (!selectedId) {
+      return null;
+    }
+    return (
+      events.find((event) => event.id === selectedId) ??
+      (selectedDetail?.id === selectedId ? selectedDetail : null) ??
+      globeEvents.find((event) => event.id === selectedId) ??
+      null
+    );
+  }, [events, globeEvents, selectedDetail, selectedId]);
+
+  // Hydrate full event detail (title/summary/place) for globe-only selections.
+  useEffect(() => {
+    if (!selectedId || events.some((event) => event.id === selectedId)) {
+      return;
+    }
+    if (selectedDetail?.id === selectedId) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const token = await getAccessToken();
+      if (!token || cancelled) {
+        return;
+      }
+      try {
+        const full = await getEvent(token, selectedId);
+        if (!cancelled) {
+          setSelectedDetail(full);
+        }
+      } catch {
+        // Non-fatal: fall back to the compact globe point data.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, events, selectedDetail, getAccessToken]);
 
   const searchHitToEvent = useCallback(
     (hit: Awaited<ReturnType<typeof searchEvents>>["hits"][number]): Event => ({
@@ -273,6 +321,7 @@ export function CommandCenterPage() {
     setEvents([]);
     setGlobeEvents([]);
     setGlobeTotal(0);
+    setClusterFocus(null);
     setGlobeEpoch((epoch) => epoch + 1);
     const token = await getAccessToken();
     if (!token || generation !== queryGenerationRef.current) {
@@ -445,6 +494,11 @@ export function CommandCenterPage() {
             events={globeEvents}
             selectedId={selectedId}
             onSelect={setSelectedId}
+            onSelectCluster={handleSelectCluster}
+            onClearSelection={() => {
+              setSelectedId(null);
+              setClusterFocus(null);
+            }}
             layers={effectiveLayers}
             globeTotal={globeTotal}
             globeLoading={globeLoading}
@@ -531,7 +585,31 @@ export function CommandCenterPage() {
             </button>
           ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {loading ? (
+            {clusterFocus ? (
+              <>
+                <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-white/5 px-3 py-2">
+                  <span className="text-[11px] font-medium text-foreground/70">
+                    Cluster · {clusterFocus.count.toLocaleString()} quake
+                    {clusterFocus.count === 1 ? "" : "s"}
+                    {clusterFocus.count > clusterFocus.events.length
+                      ? ` · top ${clusterFocus.events.length.toLocaleString()}`
+                      : ""}
+                  </span>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-white/10"
+                    onClick={() => setClusterFocus(null)}
+                  >
+                    Clear
+                  </button>
+                </div>
+                <EventList
+                  events={clusterFocus.events}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                />
+              </>
+            ) : loading ? (
               <p className="p-4 text-sm text-foreground/50">Loading…</p>
             ) : (
               <>
