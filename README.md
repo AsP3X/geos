@@ -61,7 +61,11 @@ pnpm --filter geos-frontend build
 # Data services (postgres, meilisearch, object-storage) + app services
 ./scripts/dev.sh
 
-# Or run the full stack in containers
+# Full stack in containers (local overlay — no external proxy-network required)
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+
+# Behind a reverse proxy: base compose attaches api/frontend to external
+# proxy-network (create it first: docker network create proxy-network)
 docker compose up --build
 ```
 

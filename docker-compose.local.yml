@@ -1,0 +1,16 @@
+# Local development overlay for docker-compose.yml.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+#
+# Keeps every service on geos-internal only so you do not need the external
+# proxy-network (used when routing api/frontend through a reverse proxy).
+
+services:
+  api:
+    networks:
+      - geos-internal
+
+  frontend:
+    networks:
+      - geos-internal
