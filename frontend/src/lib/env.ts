@@ -1,6 +1,16 @@
 /// Base URL for the Geos HTTP API (no trailing slash).
-/// Empty string uses same-origin (Vite dev proxy → API).
+/// Empty string uses same-origin paths (`/api/v1/...`).
+///
+/// Resolution order:
+/// 1. Runtime `window.__GEOS_CONFIG__.apiBaseUrl` from `/config.js` (Docker /
+///    reverse-proxy deploys — set via `GEOS_API_BASE_URL` at container start)
+/// 2. Build-time `VITE_API_BASE_URL` (local `pnpm dev` / optional bake-in)
+/// 3. Same-origin (empty)
 export function apiBaseUrl(): string {
+  const runtime = window.__GEOS_CONFIG__?.apiBaseUrl;
+  if (typeof runtime === "string" && runtime.length > 0) {
+    return runtime.replace(/\/$/, "");
+  }
   const configured = import.meta.env.VITE_API_BASE_URL;
   if (typeof configured === "string" && configured.length > 0) {
     return configured.replace(/\/$/, "");

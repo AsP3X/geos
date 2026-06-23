@@ -14,6 +14,8 @@ RUN pnpm --filter geos-frontend build
 
 FROM nginx:1.27-alpine AS runtime
 COPY docker/frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker/frontend/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 EXPOSE 4173
-CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["/entrypoint.sh"]

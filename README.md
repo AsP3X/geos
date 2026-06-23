@@ -77,6 +77,22 @@ docker compose up --build
 | Object storage (nebular-os) | http://localhost:9000 |
 | Postgres | localhost:5432 |
 
+## Reverse proxy (nginx Proxy Manager)
+
+The frontend reads the public API URL at **container runtime** via `GEOS_API_BASE_URL`
+(injected into `/config.js` on startup — no image rebuild when this changes).
+
+| NPM layout | `GEOS_API_BASE_URL` | Notes |
+| --- | --- | --- |
+| One host, `/api` → geos-api | _(empty)_ | Browser calls same-origin `/api/v1/...`. Either NPM proxies `/api` to `geos-api:8080`, or NPM points at the frontend container and its nginx proxies `/api` internally. |
+| Separate API host | `https://api.your-domain.example` | Browser calls the API directly (REST, WebSocket, tile imagery). CORS is permissive today. |
+
+After changing `.env`, restart the frontend container:
+
+```bash
+docker compose up -d frontend
+```
+
 ## Dev scripts
 
 | Script | Purpose |

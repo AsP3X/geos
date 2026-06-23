@@ -25,8 +25,9 @@ search, and live event updates over WebSocket.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `VITE_API_BASE_URL` | Optional absolute API URL baked in at build time. Leave unset for same-origin `/api` (Vite dev proxy locally; nginx proxy in Docker). | _(empty — use proxy)_ |
+| `VITE_API_BASE_URL` | Optional absolute API URL baked in at build time (local `pnpm dev`). Leave unset for same-origin `/api`. | _(empty — use proxy)_ |
 | `VITE_API_PROXY_TARGET` | Backend URL for the Vite dev server `/api` proxy only (`pnpm dev`). | `http://localhost:8080` |
+| `GEOS_API_BASE_URL` | **Docker/runtime:** public API URL injected into `/config.js` at container start (no rebuild). Leave empty for same-origin `/api` behind NPM. | _(empty)_ |
 
 Copy the root `.env.example` and adjust as needed; Vite only exposes variables
 prefixed with `VITE_`.

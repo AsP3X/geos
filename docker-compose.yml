@@ -128,6 +128,11 @@ services:
       dockerfile: docker/frontend/Dockerfile
     container_name: geos-frontend
     restart: unless-stopped
+    environment:
+      # Public API URL the browser calls (no trailing slash). Empty = same-origin
+      # `/api/...` (NPM proxies /api to geos-api, or the container nginx below).
+      # Set when the API is on a separate host, e.g. https://api.geos.example.com
+      GEOS_API_BASE_URL: ${GEOS_API_BASE_URL:-}
     ports:
       - "${FRONTEND_PORT:-4173}:4173"
     depends_on:
