@@ -109,6 +109,16 @@ function filtersForGlobeWeather(filters: EventFilters): EventFilters | null {
   return { ...filters, categories, sort: "recent" };
 }
 
+/** Stable fingerprint so viewport refetches skip React state when ids are unchanged. */
+function weatherEventIdsKey(events: Event[]): string {
+  if (events.length === 0) {
+    return "";
+  }
+  const ids = events.map((event) => event.id);
+  ids.sort();
+  return ids.join("\0");
+}
+
 /** Floating card column: compact, viewport-bounded, scrolls internally.
  * Note: no `relative` here — these cards are placed with `absolute`, and a
  * second position utility would override it (Tailwind orders `.relative`
@@ -394,7 +404,12 @@ export function CommandCenterPage() {
         if (generation !== globeGenerationRef.current) {
           return;
         }
-        setGlobeWeatherEvents(response.areas.map(weatherAreaToEvent));
+        const nextWeatherEvents = response.areas.map(weatherAreaToEvent);
+        setGlobeWeatherEvents((current) =>
+          weatherEventIdsKey(current) === weatherEventIdsKey(nextWeatherEvents)
+            ? current
+            : nextWeatherEvents,
+        );
         setGlobeWeatherTotal(response.total);
       } catch {
         if (generation !== globeGenerationRef.current) {

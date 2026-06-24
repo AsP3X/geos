@@ -51,12 +51,21 @@ function toFeature(event: Event): {
   };
 }
 
+/** Strip Cesium's `_2`, `_3`, … suffix when one Feature becomes multiple entities. */
+function normalizeCesiumEntityId(id: string): string {
+  const match = /^(.+)_(\d+)$/.exec(id);
+  return match ? match[1] : id;
+}
+
 function resolveEventId(entity: Entity): string | undefined {
-  if (typeof entity.id === "string") {
-    return entity.id;
-  }
   const fromProps = entity.properties?.geosEventId?.getValue(JulianDate.now());
-  return typeof fromProps === "string" ? fromProps : undefined;
+  if (typeof fromProps === "string") {
+    return fromProps;
+  }
+  if (typeof entity.id === "string") {
+    return normalizeCesiumEntityId(entity.id);
+  }
+  return undefined;
 }
 
 function styleEntity(entity: Entity, event: Event, selected: boolean) {
@@ -99,7 +108,6 @@ export async function rebuildWeatherLayer(
   viewer: Viewer,
   dataSourceRef: { current: GeoJsonDataSource | null },
   events: Event[],
-  selectedId: string | null,
   visible: boolean,
 ): Promise<void> {
   if (dataSourceRef.current) {
@@ -127,7 +135,7 @@ export async function rebuildWeatherLayer(
     if (!event) {
       continue;
     }
-    styleEntity(entity, event, event.id === selectedId);
+    styleEntity(entity, event, false);
   }
 
   viewer.dataSources.add(dataSource);
@@ -161,17 +169,14 @@ export function weatherEventIdFromPick(
   if (!picked?.id) {
     return undefined;
   }
-  const candidate =
-    typeof picked.id === "string"
-      ? picked.id
-      : typeof picked.id === "object" &&
-          picked.id !== null &&
-          "id" in picked.id &&
-          typeof (picked.id as Entity).id === "string"
-        ? ((picked.id as Entity).id as string)
-        : undefined;
-  if (!candidate) {
+  let eventId: string | undefined;
+  if (typeof picked.id === "object" && picked.id !== null && "id" in picked.id) {
+    eventId = resolveEventId(picked.id as Entity);
+  } else if (typeof picked.id === "string") {
+    eventId = normalizeCesiumEntityId(picked.id);
+  }
+  if (!eventId) {
     return undefined;
   }
-  return events.some((event) => event.id === candidate) ? candidate : undefined;
+  return events.some((event) => event.id === eventId) ? eventId : undefined;
 }

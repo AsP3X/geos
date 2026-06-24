@@ -1016,21 +1016,22 @@ export function CesiumGlobeViewport({
       return;
     }
     let cancelled = false;
-    void rebuildWeatherLayer(
-      viewer,
-      weatherDataSourceRef,
-      weatherEvents,
-      selectedId,
-      layers.weather,
-    ).then(() => {
-      if (cancelled) {
-        return;
-      }
-    });
+    void rebuildWeatherLayer(viewer, weatherDataSourceRef, weatherEvents, layers.weather).then(
+      () => {
+        if (cancelled) {
+          return;
+        }
+        refreshWeatherSelection(
+          weatherDataSourceRef.current,
+          weatherEventsRef.current,
+          selectedIdRef.current,
+        );
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [weatherEvents, layers.weather, selectedId, globeEpoch]);
+  }, [weatherEvents, layers.weather]);
 
   // ── Selection highlight ─────────────────────────────────────────────────────
   useEffect(() => {
