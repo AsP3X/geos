@@ -1,42 +1,17 @@
 import { Color } from "cesium";
 import type { Event } from "@/types/event";
 import { severityToCesiumColor } from "@/components/globe/cesium/severity-colors";
+import {
+  LEVEL_CELL_DEG,
+  UNCLUSTER_CELL_DEG,
+  UNCLUSTER_LEVEL,
+  pickLevelIndexWithHysteresis,
+} from "@/components/globe/cesium/lod";
+
+// Re-exported for existing call sites that import them from this module.
+export { TARGET_CELL_PX, UNCLUSTER_CELL_DEG, desiredCellDeg } from "@/components/globe/cesium/lod";
 
 const DEG2RAD = Math.PI / 180;
-
-/** Finest grid step (degrees). Each coarser level doubles this so cell borders align. */
-const FINEST_CELL_DEG = 0.004;
-const COARSEST_CELL_DEG = 64;
-
-/**
- * Dyadic LOD steps (coarse → fine). Aligned grids ensure zooming out only merges
- * cells — marker count never increases when the view coarsens.
- */
-const LEVEL_CELL_DEG: readonly number[] = (() => {
-  const steps: number[] = [];
-  let deg = FINEST_CELL_DEG;
-  while (deg <= COARSEST_CELL_DEG + 1e-9) {
-    steps.push(deg);
-    deg *= 2;
-  }
-  return steps.reverse();
-})();
-
-/** Delay LOD flips until the view crosses the level boundary by this margin. */
-const LEVEL_HYSTERESIS_RATIO = 1.22;
-
-/** Desired on-screen cell size (CSS px) used to pick the active LOD level. */
-export const TARGET_CELL_PX = 26;
-
-/**
- * When the view is zoomed in enough that a cluster cell would be smaller than
- * this (degrees), render every quake as its own dot instead of a merged bubble.
- * ~0.003° ≈ 330 m latitude — close enough to distinguish nearby events.
- */
-export const UNCLUSTER_CELL_DEG = 0.003;
-
-/** Sentinel `level` index returned when the uncluster path is active. */
-const UNCLUSTER_LEVEL = LEVEL_CELL_DEG.length;
 
 /** Member quakes retained per cluster (sorted by impact) for the sidebar list. */
 const MEMBER_CAP = 1500;
@@ -141,45 +116,6 @@ function buildLevel(events: Event[], cellDeg: number): ScreenClusters {
   return { singles, clusters };
 }
 
-/** Pick the precomputed level whose cell size best matches the target px size. */
-function pickLevelIndex(desiredDeg: number): number {
-  let best = 0;
-  let bestErr = Infinity;
-  for (let i = 0; i < LEVEL_CELL_DEG.length; i += 1) {
-    const err = Math.abs(Math.log(LEVEL_CELL_DEG[i] / desiredDeg));
-    if (err < bestErr) {
-      bestErr = err;
-      best = i;
-    }
-  }
-  return best;
-}
-
-/**
- * Like {@link pickLevelIndex} but resists rapid flips when the view hovers near
- * a level boundary (prevents clusters briefly splitting into extra singles).
- */
-function pickLevelIndexWithHysteresis(desiredDeg: number, currentLevel: number | null): number {
-  const target = pickLevelIndex(desiredDeg);
-  if (currentLevel === null || target === currentLevel || currentLevel === UNCLUSTER_LEVEL) {
-    return target;
-  }
-
-  // Index 0 is coarsest; higher index = finer cells.
-  if (target < currentLevel) {
-    const boundary = Math.sqrt(LEVEL_CELL_DEG[target] * LEVEL_CELL_DEG[currentLevel]);
-    if (desiredDeg < boundary * LEVEL_HYSTERESIS_RATIO) {
-      return currentLevel;
-    }
-  } else {
-    const boundary = Math.sqrt(LEVEL_CELL_DEG[currentLevel] * LEVEL_CELL_DEG[target]);
-    if (desiredDeg > boundary / LEVEL_HYSTERESIS_RATIO) {
-      return currentLevel;
-    }
-  }
-  return target;
-}
-
 /**
  * Caches the merged spheres per LOD level for one event set. Recomputing on
  * camera move only re-selects the level (cheap) unless the event set changed.
@@ -221,25 +157,4 @@ export class ClusterIndex {
     }
     return { level, result };
   }
-}
-
-/**
- * Derive the target cluster cell size (degrees) from the Cesium camera height
- * and canvas, mirroring the r3f screen-space heuristic: a cell should subtend
- * roughly {@link TARGET_CELL_PX} pixels.
- */
-export function desiredCellDeg(
-  cameraHeightMeters: number,
-  fovyRadians: number,
-  canvasHeightPx: number,
-): number {
-  if (canvasHeightPx <= 0) {
-    return LEVEL_CELL_DEG[0];
-  }
-  // Vertical ground extent under the camera, then meters-per-pixel.
-  const groundExtentMeters = 2 * cameraHeightMeters * Math.tan(fovyRadians / 2);
-  const metersPerPixel = groundExtentMeters / canvasHeightPx;
-  const cellMeters = TARGET_CELL_PX * metersPerPixel;
-  // ~111.32 km per degree of latitude at the surface.
-  return cellMeters / 111_320;
 }
