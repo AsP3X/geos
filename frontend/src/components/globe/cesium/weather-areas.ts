@@ -1,8 +1,11 @@
 import {
+  ArcType,
   ColorMaterialProperty,
   ConstantProperty,
   GeoJsonDataSource,
+  HeightReference,
   JulianDate,
+  PointGraphics,
   type Entity,
   type Viewer,
 } from "cesium";
@@ -59,16 +62,32 @@ function resolveEventId(entity: Entity): string | undefined {
 function styleEntity(entity: Entity, event: Event, selected: boolean) {
   const colors = weatherColors(event.severity, selected);
   if (entity.polygon) {
+    // v1 globe is a flat ellipsoid with no terrain provider, so polygons must
+    // render directly on the surface (height 0, no ground clamping — clamped
+    // polygons need the classification/terrain pipeline and draw nothing here).
     entity.polygon.material = new ColorMaterialProperty(colors.fill);
+    entity.polygon.height = new ConstantProperty(0);
+    entity.polygon.heightReference = new ConstantProperty(HeightReference.NONE);
+    entity.polygon.perPositionHeight = new ConstantProperty(false);
+    entity.polygon.arcType = new ConstantProperty(ArcType.GEODESIC);
+    entity.polygon.outline = new ConstantProperty(true);
     entity.polygon.outlineColor = new ConstantProperty(colors.stroke);
     entity.polygon.outlineWidth = new ConstantProperty(colors.strokeWidth);
-    entity.polygon.height = new ConstantProperty(0);
   }
-  if (entity.point) {
-    entity.point.pixelSize = new ConstantProperty(selected ? 16 : 14);
-    entity.point.color = new ConstantProperty(colors.fill);
-    entity.point.outlineColor = new ConstantProperty(colors.stroke);
-    entity.point.outlineWidth = new ConstantProperty(selected ? 3 : 2);
+
+  // GeoJsonDataSource renders Point features as billboards (pin images); swap
+  // them for a styled PointGraphics matching the severity palette.
+  if (entity.billboard) {
+    entity.billboard = undefined;
+  }
+  if (!entity.polygon) {
+    entity.point = new PointGraphics({
+      pixelSize: selected ? 16 : 14,
+      color: colors.fill,
+      outlineColor: colors.stroke,
+      outlineWidth: selected ? 3 : 2,
+      heightReference: HeightReference.NONE,
+    });
   }
   entity.id = event.id;
 }
@@ -94,8 +113,10 @@ export async function rebuildWeatherLayer(
     features: events.map(toFeature),
   };
 
+  // No clampToGround: this globe has no terrain, so polygons render on the
+  // ellipsoid surface as ordinary geometry (styled per-entity below).
   const dataSource = await GeoJsonDataSource.load(collection, {
-    clampToGround: true,
+    clampToGround: false,
   });
 
   for (const entity of dataSource.entities.values) {
