@@ -1,10 +1,11 @@
 import { type FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
+import { Building2, Hash, Lock, Mail } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { ApiError } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { AuthField } from "@/components/auth/AuthField";
+import { AuthShell } from "@/components/auth/AuthShell";
 
 function slugify(value: string): string {
   return value
@@ -55,73 +56,82 @@ export function RegisterPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="text-primary">Create tenant</CardTitle>
-          <CardDescription>Register your organization and owner account</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form className="flex flex-col gap-4" onSubmit={onSubmit}>
-            <label className="flex flex-col gap-1.5 text-sm">
-              Organization name
-              <Input
-                required
-                value={tenantName}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setTenantName(next);
-                  if (!slugTouched) {
-                    setTenantSlug(slugify(next));
-                  }
-                }}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              Tenant slug
-              <Input
-                required
-                value={tenantSlug}
-                onChange={(e) => {
-                  setSlugTouched(true);
-                  setTenantSlug(e.target.value);
-                }}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              Email
-              <Input
-                autoComplete="email"
-                required
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              Password
-              <Input
-                autoComplete="new-password"
-                minLength={12}
-                required
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
-            <Button disabled={pending} type="submit">
-              {pending ? "Creating…" : "Create account"}
-            </Button>
-          </form>
-          <p className="mt-4 text-center text-sm text-muted-foreground">
-            Already registered?{" "}
-            <Link className="text-primary hover:underline" to="/login">
-              Sign in
-            </Link>
+    <AuthShell
+      badge="Get started"
+      title="Create your tenant"
+      subtitle="Register your organization and owner account to launch your command center."
+      footer={
+        <>
+          Already registered?{" "}
+          <Link className="font-medium text-primary hover:underline" to="/login">
+            Sign in
+          </Link>
+        </>
+      }
+    >
+      <form className="flex flex-col gap-4" onSubmit={onSubmit}>
+        <AuthField
+          label="Organization name"
+          icon={<Building2 size={16} />}
+          required
+          placeholder="Acme Intelligence"
+          value={tenantName}
+          onChange={(e) => {
+            const next = e.target.value;
+            setTenantName(next);
+            if (!slugTouched) {
+              setTenantSlug(slugify(next));
+            }
+          }}
+        />
+        <AuthField
+          label="Tenant slug"
+          icon={<Hash size={16} />}
+          required
+          placeholder="acme-intel"
+          hint="Lowercase letters, numbers, and hyphens. Used in your workspace URL."
+          value={tenantSlug}
+          onChange={(e) => {
+            setSlugTouched(true);
+            setTenantSlug(e.target.value);
+          }}
+        />
+        <AuthField
+          label="Email"
+          icon={<Mail size={16} />}
+          autoComplete="email"
+          required
+          type="email"
+          placeholder="you@organization.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <AuthField
+          label="Password"
+          icon={<Lock size={16} />}
+          autoComplete="new-password"
+          minLength={12}
+          required
+          type="password"
+          placeholder="At least 12 characters"
+          hint="Use at least 12 characters."
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
+            {error}
           </p>
-        </CardContent>
-      </Card>
-    </div>
+        ) : null}
+
+        <Button disabled={pending} type="submit" className="mt-2 h-11 rounded-xl">
+          {pending ? "Creating…" : "Create account"}
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

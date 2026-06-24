@@ -1,10 +1,11 @@
 import { type FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
+import { Building2, Lock, Mail } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { ApiError } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { AuthField } from "@/components/auth/AuthField";
+import { AuthShell } from "@/components/auth/AuthShell";
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -28,55 +29,63 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="text-primary">Geos</CardTitle>
-          <CardDescription>Sign in to the command center</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form className="flex flex-col gap-4" onSubmit={onSubmit}>
-            <label className="flex flex-col gap-1.5 text-sm">
-              Email
-              <Input
-                autoComplete="email"
-                required
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              Password
-              <Input
-                autoComplete="current-password"
-                required
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              Tenant slug <span className="text-muted-foreground">(optional)</span>
-              <Input
-                autoComplete="organization"
-                value={tenantSlug}
-                onChange={(e) => setTenantSlug(e.target.value)}
-              />
-            </label>
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
-            <Button disabled={pending} type="submit">
-              {pending ? "Signing in…" : "Sign in"}
-            </Button>
-          </form>
-          <p className="mt-4 text-center text-sm text-muted-foreground">
-            No account?{" "}
-            <Link className="text-primary hover:underline" to="/register">
-              Register a tenant
-            </Link>
+    <AuthShell
+      badge="Welcome back"
+      title="Sign in to Geos"
+      subtitle="Access your command center and resume monitoring live events."
+      footer={
+        <>
+          No account?{" "}
+          <Link className="font-medium text-primary hover:underline" to="/register">
+            Register a tenant
+          </Link>
+        </>
+      }
+    >
+      <form className="flex flex-col gap-4" onSubmit={onSubmit}>
+        <AuthField
+          label="Email"
+          icon={<Mail size={16} />}
+          autoComplete="email"
+          required
+          type="email"
+          placeholder="you@organization.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <AuthField
+          label="Password"
+          icon={<Lock size={16} />}
+          autoComplete="current-password"
+          required
+          type="password"
+          placeholder="Enter your password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <AuthField
+          label="Tenant slug"
+          optional
+          icon={<Building2 size={16} />}
+          autoComplete="organization"
+          placeholder="acme-intel"
+          value={tenantSlug}
+          onChange={(e) => setTenantSlug(e.target.value)}
+        />
+
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
+            {error}
           </p>
-        </CardContent>
-      </Card>
-    </div>
+        ) : null}
+
+        <Button disabled={pending} type="submit" className="mt-2 h-11 rounded-xl">
+          {pending ? "Signing in…" : "Sign in"}
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

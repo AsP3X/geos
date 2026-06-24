@@ -103,3 +103,78 @@ body,
   );
   pointer-events: none;
 }
+
+/* ── Auth backdrop motion ─────────────────────────────────────────────
+   Ambient animations for the immersive sign-in / sign-up scene. They are
+   intentionally slow and low-amplitude so the globe feels alive without
+   distracting from the form. */
+@keyframes geos-globe-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes geos-ping {
+  0% {
+    transform: scale(0.5);
+    opacity: 0.9;
+  }
+  70%,
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+@keyframes geos-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes geos-aurora {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: translate3d(2%, -1.5%, 0) scale(1.08);
+  }
+}
+
+@keyframes geos-drift {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: -1200px 600px;
+  }
+}
+
+@keyframes geos-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.geos-rise {
+  animation: geos-rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .geos-globe-spin,
+  [data-geos-motion] {
+    animation: none !important;
+  }
+}
