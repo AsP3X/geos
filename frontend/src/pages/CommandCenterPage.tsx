@@ -266,8 +266,27 @@ export function CommandCenterPage() {
       setGlobeLoading(true);
       setGlobeLoadingMore(false);
 
+      // Fetch the grand total in parallel (COUNT(*) can be slow) so the dots
+      // stream in as each data batch arrives instead of waiting on the count.
+      void (async () => {
+        try {
+          const countResponse = await listEventMapPoints(token, {
+            filters: globeFilters,
+            availableSources: sources,
+            limit: 1,
+            offset: 0,
+            bbox,
+            withCount: true,
+          });
+          if (generation === globeGenerationRef.current) {
+            setGlobeTotal(countResponse.total);
+          }
+        } catch {
+          // Non-fatal: the status pill just omits the grand total.
+        }
+      })();
+
       let offset = 0;
-      let total = 0;
 
       try {
         while (generation === globeGenerationRef.current && offset < GLOBE_MAP_MAX_POINTS) {
@@ -277,6 +296,7 @@ export function CommandCenterPage() {
             limit: GLOBE_MAP_BATCH_SIZE,
             offset,
             bbox,
+            withCount: false,
           });
           if (generation !== globeGenerationRef.current) {
             return;
@@ -285,28 +305,24 @@ export function CommandCenterPage() {
           const batch = response.points.map(mapPointToEvent);
 
           if (offset === 0) {
-            total = response.total;
-            setGlobeTotal(total);
             setGlobeLoading(false);
-            setGlobeLoadingMore(total > batch.length);
             // Replace the previous view's points (viewport changed or new filter).
             setGlobeEvents(batch);
           } else {
             setGlobeEvents((current) => appendGlobeBatch(current, batch));
           }
 
-          if (batch.length === 0) {
-            break;
-          }
           offset += batch.length;
 
-          const reachedTotal = offset >= total;
+          // Drive pagination by page fullness (no dependency on the count): a
+          // short page means we reached the end of the matching set.
           const reachedCap = offset >= GLOBE_MAP_MAX_POINTS;
           const shortPage = batch.length < GLOBE_MAP_BATCH_SIZE;
-          if (reachedTotal || reachedCap || shortPage) {
+          if (batch.length === 0 || shortPage || reachedCap) {
             break;
           }
 
+          setGlobeLoadingMore(true);
           await pause(GLOBE_MAP_BATCH_PAUSE_MS);
         }
       } catch {

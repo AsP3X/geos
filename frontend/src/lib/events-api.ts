@@ -121,6 +121,8 @@ export interface ListEventsParams {
   offset?: number;
   /** Restrict results to a viewport bounding box (globe lazy-loading). */
   bbox?: GlobeBBox | null;
+  /** Override whether the server computes the full `total` (COUNT(*)). */
+  withCount?: boolean;
 }
 
 export async function listEvents(
@@ -153,6 +155,9 @@ export async function listEventMapPoints(
     search.set("min_lat", String(params.bbox.minLat));
     search.set("max_lon", String(params.bbox.maxLon));
     search.set("max_lat", String(params.bbox.maxLat));
+  }
+  if (params.withCount !== undefined) {
+    search.set("with_count", String(params.withCount));
   }
   appendFilterParams(search, params.filters, params.availableSources ?? []);
   return apiGet<EventMapResponse>(`/api/v1/events/map?${search}`, accessToken);

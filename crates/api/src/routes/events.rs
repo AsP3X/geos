@@ -60,6 +60,11 @@ pub struct ListEventsQuery {
     pub limit: Option<i64>,
     /// Pagination offset.
     pub offset: Option<i64>,
+    /// Whether `/events/map` computes the full matching `total` (COUNT(*)).
+    /// Defaults to `offset == 0`; the globe sends `false` on data batches and
+    /// issues one parallel `with_count=true` request so dots aren't blocked on
+    /// the count.
+    pub with_count: Option<bool>,
 }
 
 /// Paginated list response wrapper.
@@ -167,9 +172,10 @@ pub async fn map(
 
     let limit = query.limit.unwrap_or(MAP_MAX_LIMIT).clamp(1, MAP_MAX_LIMIT);
     let offset = query.offset.unwrap_or(0).max(0);
-    // The globe streams points in pages but only needs the total once. Compute it
-    // on the first page and skip the redundant COUNT on subsequent batches.
-    let with_count = offset == 0;
+    // The globe streams points in pages but only needs the total once, fetched
+    // via a single parallel request so dots aren't blocked on COUNT(*). Honor an
+    // explicit flag; otherwise default to counting only the first page.
+    let with_count = query.with_count.unwrap_or(offset == 0);
 
     let result = list_event_map_points(
         &state.pool,

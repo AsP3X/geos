@@ -9,6 +9,7 @@ import {
   Ion,
   JulianDate,
   Math as CesiumMath,
+  PointPrimitive,
   PointPrimitiveCollection,
   PolylineGraphics,
   Rectangle,
@@ -26,11 +27,23 @@ import { bboxChanged, viewBoundsToBBox } from "@/components/globe/cesium/viewpor
 import { useAuth } from "@/hooks/useAuth";
 import { type GlobeLayers, isQuake } from "@/components/globe/layers";
 import {
-  ClusterIndex,
-  desiredCellDeg,
   type GlobeCluster,
   type ScreenClusters,
+  SEVERITY_ORDER,
+  SEVERITY_RANK,
 } from "@/components/globe/cesium/clusters";
+import type {
+  ClusterDataMessage,
+  ClusterQueryMessage,
+  ClusterResultMessage,
+} from "@/components/globe/cesium/cluster-grid";
+import {
+  desiredCellDeg,
+  LEVEL_CELL_DEG,
+  pickLevelIndexWithHysteresis,
+  UNCLUSTER_CELL_DEG,
+  UNCLUSTER_LEVEL,
+} from "@/components/globe/cesium/lod";
 import {
   clusterDotStyle,
   dotPixelScaleForHeight,
@@ -38,6 +51,7 @@ import {
   quakePointStyle,
   selectionRingStyle,
 } from "@/components/globe/cesium/quake-dots";
+import { severityToCesiumColor } from "@/components/globe/cesium/severity-colors";
 import { buildHeatCanvas } from "@/components/globe/cesium/heat";
 import { createPoleUnderlayCanvas, DAYMAP_URL } from "@/components/globe/cesium/pole-underlay";
 import { getTilesSession, sentinel2TemplateUrl } from "@/lib/tiles-api";
@@ -76,6 +90,9 @@ const BORDER_LODS = [
 ];
 /** Coastline GeoJSON, loaded once zoomed in (raster carries the wide view). */
 const COASTLINE_LOD = { url: "/geo/ne_50m_land.geojson", maxHeightMeters: 4.0e6 };
+
+/** Upper bound on cached dot positions before the cache is reset (memory guard). */
+const POSITION_CACHE_MAX = 250_000;
 
 /** Picked-primitive identity stored on each Cesium point/label. */
 type PickId =
@@ -129,9 +146,25 @@ export function CesiumGlobeViewport({
   const clustersRef = useRef<PointPrimitiveCollection | null>(null);
   const selectionRef = useRef<PointPrimitiveCollection | null>(null);
   const heatLayerRef = useRef<ImageryLayer | null>(null);
-  const indexRef = useRef<ClusterIndex>(new ClusterIndex([]));
-  const lastLevelRef = useRef<number>(-1);
+  // Clustering runs in a Web Worker over typed arrays; the main thread keeps the
+  // matching `Event[]` to map worker-returned indices back for rendering/picking.
+  const workerRef = useRef<Worker | null>(null);
+  const dataVersionRef = useRef(0);
+  const datasetEventsRef = useRef<Event[]>([]);
+  const requestIdRef = useRef(0);
+  const latestRequestIdRef = useRef(0);
+  const lastAppliedVersionRef = useRef(-1);
+  const currentLevelRef = useRef<number | null>(null);
+  // Keyed primitive maps enable incremental diffing (add/remove/restyle only the
+  // dots that changed) instead of a full removeAll + re-add on every pan.
+  const singleByKeyRef = useRef<Map<string, PointPrimitive>>(new Map());
+  const clusterByKeyRef = useRef<Map<string, PointPrimitive>>(new Map());
+  // Cache event id → Cartesian3 so repeated rebuilds (every zoom/LOD step) reuse
+  // positions instead of recomputing `fromDegrees` (trig + allocation) per dot.
+  const positionCacheRef = useRef<Map<string, Cartesian3>>(new Map());
+  const lastLevelKeyRef = useRef<number>(-1);
   const lastDotScaleKeyRef = useRef<number>(-1);
+  const lastRenderViewRef = useRef<GlobeBBox | null>(null);
   const loadedVectorUrls = useRef<Set<string>>(new Set());
   // Latest rendered singles/clusters so the selection ring can be placed on the
   // marker actually on screen (a cluster bubble or the event's own dot).
@@ -213,6 +246,14 @@ export function CesiumGlobeViewport({
     clustersRef.current = clusters;
     selectionRef.current = selection;
 
+    // Clustering worker: bins ~100k points off the main thread and returns the
+    // view-culled singles/clusters; results applied via incremental diff.
+    const clusterWorker = new Worker(new URL("./clusters.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    clusterWorker.onmessage = handleWorkerMessage;
+    workerRef.current = clusterWorker;
+
     // Pick handling: single dot → select; cluster → fly + open sidebar; miss → clear.
     const handler = new ScreenSpaceEventHandler(scene.canvas);
     handler.setInputAction((movement: ScreenSpaceEventHandler.PositionedEvent) => {
@@ -246,8 +287,7 @@ export function CesiumGlobeViewport({
       }
       clusterRebuildTimer = window.setTimeout(() => {
         clusterRebuildTimer = undefined;
-        rebuildClusters();
-        applySelectionHighlight();
+        requestClusters();
       }, 120);
     };
     const onCameraSettle = () => {
@@ -255,8 +295,7 @@ export function CesiumGlobeViewport({
         window.clearTimeout(clusterRebuildTimer);
         clusterRebuildTimer = undefined;
       }
-      rebuildClusters();
-      applySelectionHighlight();
+      requestClusters();
       // Refine border/coastline LOD for the new zoom; idempotent (skips already
       // loaded levels). Camera-driven so it no longer runs per streamed batch.
       void loadVectorOverlays();
@@ -370,7 +409,7 @@ export function CesiumGlobeViewport({
     })();
 
     void loadVectorOverlays();
-    rebuildClusters();
+    requestClusters();
 
     return () => {
       cancelled = true;
@@ -384,6 +423,8 @@ export function CesiumGlobeViewport({
       if (refreshTimer) {
         window.clearTimeout(refreshTimer);
       }
+      clusterWorker.terminate();
+      workerRef.current = null;
       viewer.camera.changed.removeEventListener(scheduleClusterRebuild);
       viewer.camera.moveEnd.removeEventListener(onCameraSettle);
       handler.destroy();
@@ -395,21 +436,96 @@ export function CesiumGlobeViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-once viewer; props read via refs
   }, []);
 
-  // ── Cluster dot rebuild ─────────────────────────────────────────────────────
-  function rebuildClusters() {
-    const viewer = viewerRef.current;
+  // ── Clustering pipeline (worker + culling + incremental diff) ───────────────
+
+  /** Cartesian3 for an event, cached by id (positions are stable per id). */
+  function positionForEvent(event: Event): Cartesian3 {
+    const cache = positionCacheRef.current;
+    let position = cache.get(event.id);
+    if (!position) {
+      position = Cartesian3.fromDegrees(event.location.lon, event.location.lat);
+      if (cache.size < POSITION_CACHE_MAX) {
+        cache.set(event.id, position);
+      }
+    }
+    return position;
+  }
+
+  /** Drop all rendered dots and reset render bookkeeping. */
+  function clearDots() {
+    singlesRef.current?.removeAll();
+    clustersRef.current?.removeAll();
+    singleByKeyRef.current.clear();
+    clusterByKeyRef.current.clear();
+    lastLevelKeyRef.current = -1;
+    lastDotScaleKeyRef.current = -1;
+    lastRenderViewRef.current = null;
+    lastResultRef.current = null;
+  }
+
+  /** Cheap path for intra-level zoom: only the dot pixel size changed. */
+  function restyleDotsInPlace(pixelSize: number) {
     const singles = singlesRef.current;
     const clusters = clustersRef.current;
-    if (!viewer || !singles || !clusters || viewer.isDestroyed()) {
+    if (singles) {
+      for (let i = 0; i < singles.length; i += 1) {
+        singles.get(i).pixelSize = pixelSize;
+      }
+    }
+    if (clusters) {
+      for (let i = 0; i < clusters.length; i += 1) {
+        clusters.get(i).pixelSize = pixelSize;
+      }
+    }
+  }
+
+  /** Extract typed arrays from events and hand the dataset to the worker. */
+  function sendDataToWorker(quakes: Event[]) {
+    const worker = workerRef.current;
+    if (!worker) {
       return;
     }
+    const n = quakes.length;
+    const lon = new Float64Array(n);
+    const lat = new Float64Array(n);
+    const severityRank = new Uint8Array(n);
+    const impact = new Float32Array(n);
+    for (let i = 0; i < n; i += 1) {
+      const event = quakes[i];
+      lon[i] = event.location.lon;
+      lat[i] = event.location.lat;
+      severityRank[i] = SEVERITY_RANK[event.severity] ?? 0;
+      impact[i] = event.impact_score;
+    }
+    dataVersionRef.current += 1;
+    datasetEventsRef.current = quakes;
+    positionCacheRef.current.clear();
+    const message: ClusterDataMessage = {
+      type: "data",
+      version: dataVersionRef.current,
+      lon: lon.buffer,
+      lat: lat.buffer,
+      severityRank: severityRank.buffer,
+      impact: impact.buffer,
+      count: n,
+    };
+    worker.postMessage(message, [lon.buffer, lat.buffer, severityRank.buffer, impact.buffer]);
+  }
 
-    if (!layersRef.current.quakeDots) {
-      singles.removeAll();
-      clusters.removeAll();
-      lastLevelRef.current = -1;
-      lastDotScaleKeyRef.current = -1;
-      lastResultRef.current = null;
+  /**
+   * Pick the LOD level + cull rectangle for the current camera and ask the
+   * worker for the visible singles/clusters. Short-circuits to an in-place
+   * restyle when only the dot pixel size changed (no LOD/view change).
+   */
+  function requestClusters(force = false) {
+    const viewer = viewerRef.current;
+    const worker = workerRef.current;
+    if (!viewer || !worker || viewer.isDestroyed()) {
+      return;
+    }
+    if (!layersRef.current.quakeDots || datasetEventsRef.current.length === 0) {
+      clearDots();
+      applySelectionHighlight();
       return;
     }
 
@@ -418,46 +534,230 @@ export function CesiumGlobeViewport({
     const fovy = (viewer.scene.camera.frustum as { fovy?: number }).fovy ?? CesiumMath.toRadians(60);
     const canvasHeight = viewer.scene.canvas.clientHeight || 1;
     const deg = desiredCellDeg(height, fovy, canvasHeight);
-    const { level, result } = indexRef.current.forDesiredDeg(deg);
-    lastResultRef.current = result;
+
+    let levelKey: number;
+    let cellDeg: number;
+    let uncluster: boolean;
+    if (deg <= UNCLUSTER_CELL_DEG) {
+      levelKey = UNCLUSTER_LEVEL;
+      cellDeg = UNCLUSTER_CELL_DEG;
+      uncluster = true;
+      currentLevelRef.current = UNCLUSTER_LEVEL;
+    } else {
+      const level = pickLevelIndexWithHysteresis(deg, currentLevelRef.current);
+      currentLevelRef.current = level;
+      levelKey = level;
+      cellDeg = LEVEL_CELL_DEG[level];
+      uncluster = false;
+    }
 
     const dotScale = dotPixelScaleForHeight(height, MAX_ZOOM_METERS);
     const dotScaleKey = Math.round(dotScale * 20);
 
-    // Skip when cluster LOD and dot size are both unchanged.
-    if (level === lastLevelRef.current && dotScaleKey === lastDotScaleKeyRef.current) {
+    const rect = camera.computeViewRectangle();
+    const renderView = rect
+      ? viewBoundsToBBox(
+          CesiumMath.toDegrees(rect.west),
+          CesiumMath.toDegrees(rect.south),
+          CesiumMath.toDegrees(rect.east),
+          CesiumMath.toDegrees(rect.north),
+        )
+      : null;
+
+    // Nothing structural changed: at most restyle dots for the new zoom.
+    if (
+      !force &&
+      levelKey === lastLevelKeyRef.current &&
+      !bboxChanged(lastRenderViewRef.current, renderView)
+    ) {
+      if (dotScaleKey !== lastDotScaleKeyRef.current) {
+        restyleDotsInPlace(QUAKE_DOT_PIXEL_SIZE * dotScale);
+        lastDotScaleKeyRef.current = dotScaleKey;
+      }
+      applySelectionHighlight();
       return;
     }
-    lastLevelRef.current = level;
-    lastDotScaleKeyRef.current = dotScaleKey;
 
-    singles.removeAll();
-    clusters.removeAll();
+    lastRenderViewRef.current = renderView;
+    const requestId = (requestIdRef.current += 1);
+    latestRequestIdRef.current = requestId;
+    const query: ClusterQueryMessage = {
+      type: "query",
+      version: dataVersionRef.current,
+      requestId,
+      levelKey,
+      cellDeg,
+      uncluster,
+      view: renderView
+        ? {
+            west: renderView.minLon,
+            south: renderView.minLat,
+            east: renderView.maxLon,
+            north: renderView.maxLat,
+          }
+        : null,
+    };
+    worker.postMessage(query);
+  }
 
-    for (const event of result.singles) {
-      singles.add({
-        position: Cartesian3.fromDegrees(event.location.lon, event.location.lat),
-        ...quakePointStyle(event.severity, dotScale),
-        id: { kind: "single", event } satisfies PickId,
-      });
+  /** Apply the latest worker result to Cesium (full rebuild or incremental diff). */
+  function applyClusterResult(message: ClusterResultMessage) {
+    const singles = singlesRef.current;
+    const clusters = clustersRef.current;
+    const viewer = viewerRef.current;
+    if (!singles || !clusters || !viewer || viewer.isDestroyed()) {
+      return;
     }
 
-    for (const cluster of result.clusters) {
-      const position = Cartesian3.fromDegrees(cluster.lon, cluster.lat);
-      const pickId: PickId = { kind: "cluster", cluster };
-      clusters.add({
-        position,
-        ...clusterDotStyle(cluster.severity, dotScale),
-        id: pickId,
-      });
+    const events = datasetEventsRef.current;
+    const height = viewer.camera.positionCartographic?.height ?? MAX_ZOOM_METERS;
+    const dotScale = dotPixelScaleForHeight(height, MAX_ZOOM_METERS);
+    const pixelSize = QUAKE_DOT_PIXEL_SIZE * dotScale;
+
+    // Map worker indices/ranks back to Event objects for rendering + picking.
+    const singleEvents: Event[] = [];
+    for (let i = 0; i < message.singleIndices.length; i += 1) {
+      const event = events[message.singleIndices[i]];
+      if (event) {
+        singleEvents.push(event);
+      }
     }
+    const clusterList: GlobeCluster[] = message.clusters.map((cluster) => {
+      const members: Event[] = [];
+      for (const index of cluster.memberIndices) {
+        const event = events[index];
+        if (event) {
+          members.push(event);
+        }
+      }
+      const severity = SEVERITY_ORDER[cluster.severityRank] ?? "info";
+      const anchorId = members[0]?.id ?? cluster.cellKey;
+      return {
+        id: `cl_${anchorId}_${cluster.count}`,
+        lon: cluster.lon,
+        lat: cluster.lat,
+        count: cluster.count,
+        members,
+        color: severityToCesiumColor(severity),
+        severity,
+      };
+    });
+
+    const singleByKey = singleByKeyRef.current;
+    const clusterByKey = clusterByKeyRef.current;
+    const fullRebuild =
+      message.version !== lastAppliedVersionRef.current || message.levelKey !== lastLevelKeyRef.current;
+
+    if (fullRebuild) {
+      singles.removeAll();
+      clusters.removeAll();
+      singleByKey.clear();
+      clusterByKey.clear();
+      for (const event of singleEvents) {
+        singleByKey.set(
+          event.id,
+          singles.add({
+            position: positionForEvent(event),
+            color: severityToCesiumColor(event.severity),
+            pixelSize,
+            outlineWidth: 0,
+            id: { kind: "single", event } satisfies PickId,
+          }),
+        );
+      }
+      for (const cluster of clusterList) {
+        clusterByKey.set(
+          cluster.id,
+          clusters.add({
+            position: Cartesian3.fromDegrees(cluster.lon, cluster.lat),
+            ...clusterDotStyle(cluster.severity, dotScale),
+            id: { kind: "cluster", cluster } satisfies PickId,
+          }),
+        );
+      }
+    } else {
+      // Incremental diff: add entering dots, remove leaving, restyle the rest.
+      const nextSingleKeys = new Set<string>();
+      for (const event of singleEvents) {
+        nextSingleKeys.add(event.id);
+      }
+      for (const [key, primitive] of singleByKey) {
+        if (!nextSingleKeys.has(key)) {
+          singles.remove(primitive);
+          singleByKey.delete(key);
+        }
+      }
+      for (const event of singleEvents) {
+        const existing = singleByKey.get(event.id);
+        if (existing) {
+          existing.pixelSize = pixelSize;
+        } else {
+          singleByKey.set(
+            event.id,
+            singles.add({
+              position: positionForEvent(event),
+              color: severityToCesiumColor(event.severity),
+              pixelSize,
+              outlineWidth: 0,
+              id: { kind: "single", event } satisfies PickId,
+            }),
+          );
+        }
+      }
+
+      const nextClusterKeys = new Set<string>();
+      for (const cluster of clusterList) {
+        nextClusterKeys.add(cluster.id);
+      }
+      for (const [key, primitive] of clusterByKey) {
+        if (!nextClusterKeys.has(key)) {
+          clusters.remove(primitive);
+          clusterByKey.delete(key);
+        }
+      }
+      for (const cluster of clusterList) {
+        const existing = clusterByKey.get(cluster.id);
+        if (existing) {
+          existing.pixelSize = pixelSize;
+          existing.id = { kind: "cluster", cluster } satisfies PickId;
+        } else {
+          clusterByKey.set(
+            cluster.id,
+            clusters.add({
+              position: Cartesian3.fromDegrees(cluster.lon, cluster.lat),
+              ...clusterDotStyle(cluster.severity, dotScale),
+              id: { kind: "cluster", cluster } satisfies PickId,
+            }),
+          );
+        }
+      }
+    }
+
+    lastAppliedVersionRef.current = message.version;
+    lastLevelKeyRef.current = message.levelKey;
+    lastDotScaleKeyRef.current = Math.round(dotScale * 20);
+    lastResultRef.current = { singles: singleEvents, clusters: clusterList };
+    applySelectionHighlight();
+  }
+
+  /** Apply worker results, dropping stale data versions and superseded queries. */
+  function handleWorkerMessage(event: MessageEvent<ClusterResultMessage>) {
+    const message = event.data;
+    if (
+      message.type !== "result" ||
+      message.version !== dataVersionRef.current ||
+      message.requestId !== latestRequestIdRef.current
+    ) {
+      return;
+    }
+    applyClusterResult(message);
   }
 
   // ── Selection highlight, aligned to the visible marker ──────────────────────
   // Places the ring on the marker the user actually sees: the cluster bubble
   // when the selected event is aggregated into one (anchored on the top-impact
   // member, which may differ from other members), otherwise the event's own dot. Reads refs so
-  // it can be called from both the mount-time `rebuildClusters` and the effect.
+  // it can be called from both `applyClusterResult` and the selection effect.
   function applySelectionHighlight() {
     const selection = selectionRef.current;
     if (!selection) {
@@ -616,11 +916,9 @@ export function CesiumGlobeViewport({
       const data = quakeEventsRef.current;
       lastApplyAtRef.current = performance.now();
       prevQuakeCountRef.current = data.length;
-      indexRef.current = new ClusterIndex(data);
-      lastLevelRef.current = -1;
-      lastDotScaleKeyRef.current = -1;
-      rebuildClusters();
-      applySelectionHighlight();
+      // New dataset version → the next worker result triggers a full rebuild.
+      sendDataToWorker(data);
+      requestClusters(true);
     };
 
     const grewWhileStreaming =
@@ -642,14 +940,13 @@ export function CesiumGlobeViewport({
         applyEventSet();
       }, REBUILD_THROTTLE_MS - elapsed);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-stable fns read via refs; key off the event set only
   }, [quakeEvents]);
 
   // ── React to layer toggles (dots) ───────────────────────────────────────────
   useEffect(() => {
-    lastLevelRef.current = -1;
-    lastDotScaleKeyRef.current = -1;
-    rebuildClusters();
-    applySelectionHighlight();
+    requestClusters(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-stable fn read via refs; key off the toggle only
   }, [layers.quakeDots]);
 
   // ── Heat overlay: rebuild canvas layer on toggle / events / epoch ───────────
