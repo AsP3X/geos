@@ -40,4 +40,4 @@ pre-push:
     frontend-test:
       root: "frontend/"
       glob: "*.{ts,tsx}"
-      run: pnpm test --if-present
+      run: pnpm run --if-present test
