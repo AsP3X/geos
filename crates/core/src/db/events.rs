@@ -350,7 +350,8 @@ pub struct EventMapPoint {
 pub struct EventMapResult {
     /// Map points returned (may be capped by `limit`).
     pub points: Vec<EventMapPoint>,
-    /// Total rows matching the filter (ignoring pagination).
+    /// Total rows matching the filter (ignoring pagination). `0` when the count
+    /// was skipped (`with_count = false`), e.g. on non-first globe batches.
     pub total: i64,
     /// Applied page size cap.
     pub limit: i64,
@@ -415,11 +416,21 @@ pub async fn count_events(pool: &PgPool, filter: &EventListFilter) -> Result<i64
 }
 
 /// Compact map coordinates for the globe (high limit, minimal columns).
+///
+/// `with_count` controls whether the full matching `total` is computed. The
+/// globe loads points in paginated batches but only needs the total once (first
+/// batch), so callers pass `false` on subsequent batches to skip the extra
+/// `COUNT(*)` scan; `total` is then `0`.
 pub async fn list_event_map_points(
     pool: &PgPool,
     filter: &EventListFilter,
+    with_count: bool,
 ) -> Result<EventMapResult> {
-    let total = count_events(pool, filter).await?;
+    let total = if with_count {
+        count_events(pool, filter).await?
+    } else {
+        0
+    };
     let mut builder = sqlx::QueryBuilder::new(
         r#"
         SELECT

@@ -27,14 +27,18 @@ export interface EventMapResponse {
   limit: number;
 }
 
-/** Points fetched per globe map batch (keeps transfers small). */
-export const GLOBE_MAP_BATCH_SIZE = 2_500;
+/**
+ * Points fetched per globe map batch. Map points are tiny (~8 fields), and the
+ * globe now coalesces rebuilds, so larger batches cut the number of sequential
+ * round-trips (and server COUNT only runs on the first batch).
+ */
+export const GLOBE_MAP_BATCH_SIZE = 5_000;
 
 /** Hard cap on points accumulated on the globe across all batches. */
 export const GLOBE_MAP_MAX_POINTS = 100_000;
 
-/** Pause between batches so the main thread can paint (~2 frames). */
-export const GLOBE_MAP_BATCH_PAUSE_MS = 32;
+/** Pause between batches so the main thread can paint (~1 frame). */
+export const GLOBE_MAP_BATCH_PAUSE_MS = 16;
 
 export interface SearchResults {
   query: string;

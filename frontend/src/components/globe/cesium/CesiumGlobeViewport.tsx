@@ -129,6 +129,13 @@ export function CesiumGlobeViewport({
   // marker actually on screen (a cluster bubble or the event's own dot).
   const lastResultRef = useRef<ScreenClusters | null>(null);
   const selectedIdRef = useRef<string | null>(selectedId);
+  // Throttle the expensive index + primitive rebuild while map batches stream in
+  // so accumulating ~100k points stays responsive instead of rebuilding on every
+  // batch. `quakeEventsRef` lets the trailing rebuild read the latest set.
+  const rebuildTimerRef = useRef<number | undefined>(undefined);
+  const prevQuakeCountRef = useRef(0);
+  const lastApplyAtRef = useRef(0);
+  const quakeEventsRef = useRef<Event[]>([]);
 
   // Latest props captured in refs so the imperative Cesium callbacks (created
   // once on mount) always read current values without re-binding listeners.
@@ -145,6 +152,7 @@ export function CesiumGlobeViewport({
   selectedIdRef.current = selectedId;
 
   const quakeEvents = useMemo(() => events.filter(isQuake), [events]);
+  quakeEventsRef.current = quakeEvents;
 
   // ── Mount: build the viewer, imagery, handlers (once) ───────────────────────
   useEffect(() => {
@@ -236,6 +244,9 @@ export function CesiumGlobeViewport({
       }
       rebuildClusters();
       applySelectionHighlight();
+      // Refine border/coastline LOD for the new zoom; idempotent (skips already
+      // loaded levels). Camera-driven so it no longer runs per streamed batch.
+      void loadVectorOverlays();
     };
     viewer.camera.changed.addEventListener(scheduleClusterRebuild);
     viewer.camera.moveEnd.addEventListener(onCameraSettle);
@@ -351,6 +362,10 @@ export function CesiumGlobeViewport({
       cancelled = true;
       if (clusterRebuildTimer) {
         window.clearTimeout(clusterRebuildTimer);
+      }
+      if (rebuildTimerRef.current !== undefined) {
+        window.clearTimeout(rebuildTimerRef.current);
+        rebuildTimerRef.current = undefined;
       }
       if (refreshTimer) {
         window.clearTimeout(refreshTimer);
@@ -551,14 +566,45 @@ export function CesiumGlobeViewport({
     }
   }
 
-  // ── React to event-set changes: new cluster index, force rebuild ────────────
+  // ── React to event-set changes: rebuild the cluster index (throttled) ───────
+  // While batches stream in (the set only grows), a full `O(n)` index + Cesium
+  // primitive rebuild on every batch makes a large load `O(n²)` and janky. So we
+  // render the first batch immediately, coalesce intermediate batches to at most
+  // one rebuild per window, and always render the final batch via a trailing
+  // timer that reads the latest set from `quakeEventsRef`.
   useEffect(() => {
-    indexRef.current = new ClusterIndex(quakeEvents);
-    lastLevelRef.current = -1;
-    lastDotScaleKeyRef.current = -1;
-    rebuildClusters();
-    applySelectionHighlight();
-    void loadVectorOverlays();
+    const REBUILD_THROTTLE_MS = 400;
+
+    const applyEventSet = () => {
+      const data = quakeEventsRef.current;
+      lastApplyAtRef.current = performance.now();
+      prevQuakeCountRef.current = data.length;
+      indexRef.current = new ClusterIndex(data);
+      lastLevelRef.current = -1;
+      lastDotScaleKeyRef.current = -1;
+      rebuildClusters();
+      applySelectionHighlight();
+    };
+
+    const grewWhileStreaming =
+      prevQuakeCountRef.current > 0 && quakeEvents.length > prevQuakeCountRef.current;
+    const elapsed = performance.now() - lastApplyAtRef.current;
+
+    if (!grewWhileStreaming || elapsed >= REBUILD_THROTTLE_MS) {
+      // First load, filter reset/shrink, or throttle window elapsed: render now.
+      if (rebuildTimerRef.current !== undefined) {
+        window.clearTimeout(rebuildTimerRef.current);
+        rebuildTimerRef.current = undefined;
+      }
+      applyEventSet();
+    } else if (rebuildTimerRef.current === undefined) {
+      // Trailing rebuild for the rest of the window; guarantees the last batch
+      // renders even if it lands mid-window (timer reads the latest set).
+      rebuildTimerRef.current = window.setTimeout(() => {
+        rebuildTimerRef.current = undefined;
+        applyEventSet();
+      }, REBUILD_THROTTLE_MS - elapsed);
+    }
   }, [quakeEvents]);
 
   // ── React to layer toggles (dots) ───────────────────────────────────────────

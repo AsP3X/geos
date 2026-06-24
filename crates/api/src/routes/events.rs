@@ -167,6 +167,9 @@ pub async fn map(
 
     let limit = query.limit.unwrap_or(MAP_MAX_LIMIT).clamp(1, MAP_MAX_LIMIT);
     let offset = query.offset.unwrap_or(0).max(0);
+    // The globe streams points in pages but only needs the total once. Compute it
+    // on the first page and skip the redundant COUNT on subsequent batches.
+    let with_count = offset == 0;
 
     let result = list_event_map_points(
         &state.pool,
@@ -186,6 +189,7 @@ pub async fn map(
             limit,
             offset,
         },
+        with_count,
     )
     .await?;
 
