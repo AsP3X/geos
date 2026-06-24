@@ -15,7 +15,7 @@ export interface GlobeLayers {
 }
 
 export const DEFAULT_LAYERS: GlobeLayers = {
-  quakeDots: true,
+  quakeDots: false,
   quakeHeat: false,
   weather: false,
 };

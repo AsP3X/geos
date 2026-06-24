@@ -591,19 +591,19 @@ export function CommandCenterPage() {
     setCommittedQuery(searchQuery.trim());
   }
 
-  // One-way globe-layer sync: categories excluded by the filter hide their layers.
+  // One-way globe-layer sync: categories excluded by the filter hide quake layers.
+  // Weather stays toggleable; the map query only loads alerts when weather/alert
+  // categories are included (or when all categories are selected).
   const allCategories = filters.categories.length === 0;
   const quakeAllowed = allCategories || filters.categories.includes("earthquake");
-  const weatherAllowed = allCategories || filters.categories.includes("weather");
   const effectiveLayers: GlobeLayers = {
     quakeDots: layers.quakeDots && quakeAllowed,
     quakeHeat: layers.quakeHeat && quakeAllowed,
-    weather: layers.weather && weatherAllowed,
+    weather: layers.weather,
   };
   const lockedLayerKeys = {
     quakeDots: !quakeAllowed,
     quakeHeat: !quakeAllowed,
-    weather: !weatherAllowed,
   };
 
   const ingestionPanelRight = filtersOpen ? RIGHT_OF_FILTERS_PANEL : "right-4";
