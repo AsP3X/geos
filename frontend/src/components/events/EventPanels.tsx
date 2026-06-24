@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { Event } from "@/types/event";
+import { severityToHex } from "@/components/globe/cesium/severity-colors";
 import { cn } from "@/lib/utils";
 
 const SEVERITY_LABEL: Record<Event["severity"], string> = {
@@ -10,13 +11,8 @@ const SEVERITY_LABEL: Record<Event["severity"], string> = {
   critical: "Critical",
 };
 
-const SEVERITY_DOT: Record<Event["severity"], string> = {
-  info: "bg-teal-400",
-  low: "bg-sky-400",
-  moderate: "bg-primary",
-  high: "bg-orange-500",
-  critical: "bg-destructive",
-};
+const SEVERITY_DOT_CLASS = "size-2 shrink-0 rounded-full ring-2 ring-white/75";
+const SEVERITY_DOT_DETAIL_CLASS = "size-2.5 shrink-0 rounded-full ring-2 ring-white/75";
 
 interface EventListProps {
   events: Event[];
@@ -49,7 +45,8 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
             >
               <div className="flex items-center gap-2">
                 <span
-                  className={cn("size-2 shrink-0 rounded-full", SEVERITY_DOT[event.severity])}
+                  className={SEVERITY_DOT_CLASS}
+                  style={{ backgroundColor: severityToHex(event.severity) }}
                   aria-hidden
                 />
                 <span className="line-clamp-1 flex-1 font-medium text-foreground/90">
@@ -88,7 +85,8 @@ export function EventDetail({ event }: EventDetailProps) {
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-2">
           <span
-            className={cn("size-2.5 shrink-0 rounded-full", SEVERITY_DOT[event.severity])}
+            className={SEVERITY_DOT_DETAIL_CLASS}
+            style={{ backgroundColor: severityToHex(event.severity) }}
             aria-hidden
           />
           <h2 className="text-base font-semibold text-foreground">

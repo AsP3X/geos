@@ -6,13 +6,9 @@ import {
   ColorMaterialProperty,
   ConstantProperty,
   GeoJsonDataSource,
-  HorizontalOrigin,
   Ion,
   JulianDate,
-  LabelCollection,
-  LabelStyle,
   Math as CesiumMath,
-  NearFarScalar,
   PointPrimitiveCollection,
   PolylineGraphics,
   Rectangle,
@@ -20,7 +16,6 @@ import {
   ScreenSpaceEventType,
   SingleTileImageryProvider,
   UrlTemplateImageryProvider,
-  VerticalOrigin,
   Viewer,
   type ImageryLayer,
 } from "cesium";
@@ -34,7 +29,12 @@ import {
   type GlobeCluster,
   type ScreenClusters,
 } from "@/components/globe/cesium/clusters";
-import { severityToCesiumColor } from "@/components/globe/cesium/severity-colors";
+import {
+  clusterGlyphStyles,
+  QUAKE_DOT_PIXEL_SIZE,
+  quakePointStyle,
+  selectionRingStyle,
+} from "@/components/globe/cesium/quake-dots";
 import { buildHeatCanvas } from "@/components/globe/cesium/heat";
 import { createPoleUnderlayCanvas, DAYMAP_URL } from "@/components/globe/cesium/pole-underlay";
 import { getTilesSession, sentinel2TemplateUrl } from "@/lib/tiles-api";
@@ -64,17 +64,6 @@ const DEFAULT_MAX_IMAGERY_LEVEL = 12;
 /** Deep-zoom camera limits (meters from the surface). */
 const MIN_ZOOM_METERS = 80;
 const MAX_ZOOM_METERS = 4.5e7;
-
-/** Lone quake dot styling — grows when the camera pulls back so sparse events stay visible. */
-const QUAKE_DOT_PIXEL_SIZE = 12;
-const QUAKE_DOT_SCALE_BY_DISTANCE = new NearFarScalar(
-  3.0e5,
-  0.85,
-  MAX_ZOOM_METERS,
-  1.5,
-);
-const QUAKE_DOT_OUTLINE = Color.WHITE.withAlpha(0.88);
-const QUAKE_DOT_OUTLINE_WIDTH = 2;
 
 /** Country-border GeoJSON LOD: coarse always, finer once zoomed in. */
 const BORDER_LODS = [
@@ -129,7 +118,6 @@ export function CesiumGlobeViewport({
   // Mutable handles for imperative Cesium objects rebuilt as props change.
   const singlesRef = useRef<PointPrimitiveCollection | null>(null);
   const clustersRef = useRef<PointPrimitiveCollection | null>(null);
-  const labelsRef = useRef<LabelCollection | null>(null);
   const selectionRef = useRef<PointPrimitiveCollection | null>(null);
   const heatLayerRef = useRef<ImageryLayer | null>(null);
   const indexRef = useRef<ClusterIndex>(new ClusterIndex([]));
@@ -194,14 +182,12 @@ export function CesiumGlobeViewport({
     controller.maximumZoomDistance = MAX_ZOOM_METERS;
     controller.enableCollisionDetection = true;
 
-    // Imperative primitive collections for dots, clusters, labels, selection.
+    // Imperative primitive collections for dots, clusters, selection.
     const singles = scene.primitives.add(new PointPrimitiveCollection());
     const clusters = scene.primitives.add(new PointPrimitiveCollection());
-    const labels = scene.primitives.add(new LabelCollection());
     const selection = scene.primitives.add(new PointPrimitiveCollection());
     singlesRef.current = singles;
     clustersRef.current = clusters;
-    labelsRef.current = labels;
     selectionRef.current = selection;
 
     // Pick handling: single dot → select; cluster → fly + open sidebar; miss → clear.
@@ -229,12 +215,27 @@ export function CesiumGlobeViewport({
       onClearSelectionRef.current?.();
     }, ScreenSpaceEventType.LEFT_CLICK);
 
-    // Rebuild clusters when the camera settles (zoom level may have changed),
-    // then re-anchor the selection ring onto the now-current marker.
+    // Rebuild clusters while zooming (debounced) and once the camera settles.
+    let clusterRebuildTimer: number | undefined;
+    const scheduleClusterRebuild = () => {
+      if (clusterRebuildTimer) {
+        window.clearTimeout(clusterRebuildTimer);
+      }
+      clusterRebuildTimer = window.setTimeout(() => {
+        clusterRebuildTimer = undefined;
+        rebuildClusters();
+        applySelectionHighlight();
+      }, 120);
+    };
     const onCameraSettle = () => {
+      if (clusterRebuildTimer) {
+        window.clearTimeout(clusterRebuildTimer);
+        clusterRebuildTimer = undefined;
+      }
       rebuildClusters();
       applySelectionHighlight();
     };
+    viewer.camera.changed.addEventListener(scheduleClusterRebuild);
     viewer.camera.moveEnd.addEventListener(onCameraSettle);
 
     // Imagery stack (bottom → top): equirectangular pole underlay, optional
@@ -346,9 +347,13 @@ export function CesiumGlobeViewport({
 
     return () => {
       cancelled = true;
+      if (clusterRebuildTimer) {
+        window.clearTimeout(clusterRebuildTimer);
+      }
       if (refreshTimer) {
         window.clearTimeout(refreshTimer);
       }
+      viewer.camera.changed.removeEventListener(scheduleClusterRebuild);
       viewer.camera.moveEnd.removeEventListener(onCameraSettle);
       handler.destroy();
       if (!viewer.isDestroyed()) {
@@ -359,20 +364,18 @@ export function CesiumGlobeViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-once viewer; props read via refs
   }, []);
 
-  // ── Cluster (dots + bubbles) rebuild ────────────────────────────────────────
+  // ── Cluster (dots + halos) rebuild ──────────────────────────────────────────
   function rebuildClusters() {
     const viewer = viewerRef.current;
     const singles = singlesRef.current;
     const clusters = clustersRef.current;
-    const labels = labelsRef.current;
-    if (!viewer || !singles || !clusters || !labels || viewer.isDestroyed()) {
+    if (!viewer || !singles || !clusters || viewer.isDestroyed()) {
       return;
     }
 
     if (!layersRef.current.quakeDots) {
       singles.removeAll();
       clusters.removeAll();
-      labels.removeAll();
       lastLevelRef.current = -1;
       lastResultRef.current = null;
       return;
@@ -394,16 +397,11 @@ export function CesiumGlobeViewport({
 
     singles.removeAll();
     clusters.removeAll();
-    labels.removeAll();
 
     for (const event of result.singles) {
       singles.add({
         position: Cartesian3.fromDegrees(event.location.lon, event.location.lat),
-        color: severityToCesiumColor(event.severity),
-        pixelSize: QUAKE_DOT_PIXEL_SIZE,
-        outlineColor: QUAKE_DOT_OUTLINE,
-        outlineWidth: QUAKE_DOT_OUTLINE_WIDTH,
-        scaleByDistance: QUAKE_DOT_SCALE_BY_DISTANCE,
+        ...quakePointStyle(event.severity),
         id: { kind: "single", event } satisfies PickId,
       });
     }
@@ -411,24 +409,13 @@ export function CesiumGlobeViewport({
     for (const cluster of result.clusters) {
       const position = Cartesian3.fromDegrees(cluster.lon, cluster.lat);
       const pickId: PickId = { kind: "cluster", cluster };
-      clusters.add({
-        position,
-        color: cluster.color.withAlpha(0.85),
-        pixelSize: Math.min(16 + Math.log10(cluster.count) * 9, 46),
-        id: pickId,
-      });
-      labels.add({
-        position,
-        text: cluster.count.toLocaleString(),
-        font: "600 12px Inter, system-ui, sans-serif",
-        fillColor: Color.WHITE,
-        style: LabelStyle.FILL_AND_OUTLINE,
-        outlineColor: Color.BLACK.withAlpha(0.6),
-        outlineWidth: 2,
-        horizontalOrigin: HorizontalOrigin.CENTER,
-        verticalOrigin: VerticalOrigin.CENTER,
-        id: pickId,
-      });
+      for (const glyph of clusterGlyphStyles(cluster.severity)) {
+        clusters.add({
+          position,
+          ...glyph,
+          id: pickId,
+        });
+      }
     }
   }
 
@@ -452,13 +439,13 @@ export function CesiumGlobeViewport({
       item.members.some((member) => member.id === selectedId),
     );
     if (cluster) {
-      const bubble = Math.min(16 + Math.log10(cluster.count) * 9, 46);
+      const position = Cartesian3.fromDegrees(cluster.lon, cluster.lat);
+      for (const glyph of clusterGlyphStyles(cluster.severity)) {
+        selection.add({ position, ...glyph });
+      }
       selection.add({
-        position: Cartesian3.fromDegrees(cluster.lon, cluster.lat),
-        color: Color.WHITE.withAlpha(0.0),
-        pixelSize: bubble + 10,
-        outlineColor: Color.WHITE,
-        outlineWidth: 2.5,
+        position,
+        ...selectionRingStyle(22),
       });
       return;
     }
@@ -474,19 +461,11 @@ export function CesiumGlobeViewport({
     // hydrated from detail) is still visible inside the ring.
     selection.add({
       position,
-      color: severityToCesiumColor(event.severity),
-      pixelSize: QUAKE_DOT_PIXEL_SIZE + 2,
-      outlineColor: QUAKE_DOT_OUTLINE,
-      outlineWidth: QUAKE_DOT_OUTLINE_WIDTH,
-      scaleByDistance: QUAKE_DOT_SCALE_BY_DISTANCE,
+      ...quakePointStyle(event.severity, QUAKE_DOT_PIXEL_SIZE + 2),
     });
     selection.add({
       position,
-      color: Color.WHITE.withAlpha(0.0),
-      pixelSize: 24,
-      outlineColor: Color.WHITE,
-      outlineWidth: 2.5,
-      scaleByDistance: QUAKE_DOT_SCALE_BY_DISTANCE,
+      ...selectionRingStyle(24),
     });
   }
 

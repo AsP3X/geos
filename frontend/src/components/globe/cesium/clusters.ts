@@ -5,17 +5,26 @@ import { severityToCesiumColor } from "@/components/globe/cesium/severity-colors
 const DEG2RAD = Math.PI / 180;
 
 /**
- * Pre-binned cluster resolutions (cell size in degrees, coarse → fine), ported
- * verbatim from the r3f `useScreenClusters.ts` so clustering density matches the
- * previous globe. Zooming selects the level whose cells project near
- * {@link TARGET_CELL_PX} on screen.
+ * Pre-binned cluster resolutions (cell size in degrees, coarse → fine). Zooming
+ * selects the level whose cells project near {@link TARGET_CELL_PX} on screen.
  */
 const LEVEL_CELL_DEG = [
   60, 40, 26, 17, 11, 7, 4.5, 3, 2, 1.3, 0.85, 0.55, 0.36, 0.24, 0.16, 0.1, 0.06, 0.035,
+  0.02, 0.012, 0.007, 0.004,
 ];
 
 /** Desired on-screen cell size (CSS px) used to pick the active LOD level. */
 export const TARGET_CELL_PX = 26;
+
+/**
+ * When the view is zoomed in enough that a cluster cell would be smaller than
+ * this (degrees), render every quake as its own dot instead of a merged bubble.
+ * ~0.003° ≈ 330 m latitude — close enough to distinguish nearby events.
+ */
+export const UNCLUSTER_CELL_DEG = 0.003;
+
+/** Sentinel `level` index returned when the uncluster path is active. */
+const UNCLUSTER_LEVEL = LEVEL_CELL_DEG.length;
 
 /** Member quakes retained per cluster (sorted by impact) for the sidebar list. */
 const MEMBER_CAP = 1500;
@@ -28,7 +37,7 @@ const SEVERITY_RANK: Record<Event["severity"], number> = {
   critical: 4,
 };
 
-/** A merged group of nearby quakes rendered as one labeled bubble. */
+/** A merged group of nearby quakes rendered as a three-dot triangle glyph. */
 export interface GlobeCluster {
   id: string;
   lon: number;
@@ -43,7 +52,7 @@ export interface GlobeCluster {
 export interface ScreenClusters {
   /** Cells holding exactly one quake — rendered as ordinary dots. */
   singles: Event[];
-  /** Cells holding 2+ quakes — rendered as labeled bubbles. */
+  /** Cells holding 2+ quakes — rendered as a triangle glyph marker. */
   clusters: GlobeCluster[];
 }
 
@@ -144,6 +153,7 @@ function pickLevelIndex(desiredDeg: number): number {
 export class ClusterIndex {
   private readonly events: Event[];
   private readonly cache = new Map<number, ScreenClusters>();
+  private unclustered: ScreenClusters | null = null;
 
   constructor(events: Event[]) {
     this.events = events;
@@ -155,6 +165,17 @@ export class ClusterIndex {
    * the same level so the caller can skip rebuilding Cesium primitives.
    */
   forDesiredDeg(desiredDeg: number): { level: number; result: ScreenClusters } {
+    if (this.events.length === 0) {
+      return { level: 0, result: EMPTY_CLUSTERS };
+    }
+
+    if (desiredDeg <= UNCLUSTER_CELL_DEG) {
+      if (!this.unclustered) {
+        this.unclustered = { singles: this.events, clusters: [] };
+      }
+      return { level: UNCLUSTER_LEVEL, result: this.unclustered };
+    }
+
     const level = pickLevelIndex(desiredDeg);
     let result = this.cache.get(level);
     if (!result) {
