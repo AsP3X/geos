@@ -6,7 +6,7 @@ import { IngestionStatus } from "@/components/connectors/IngestionStatus";
 import { FilterPanel } from "@/components/filters/FilterPanel";
 import { eventMatchesFilters, filtersAreActive, type EventFilters } from "@/components/filters/filters";
 import { LayersRail } from "@/components/globe/LayersRail";
-import { DEFAULT_LAYERS, isQuake, type GlobeLayers } from "@/components/globe/layers";
+import { DEFAULT_LAYERS, isQuake, isWeather, type GlobeLayers } from "@/components/globe/layers";
 import type { GlobeCluster } from "@/components/globe/cesium/clusters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,9 @@ import {
   listEvents,
   listEventMapPoints,
   listEventSources,
+  listEventWeatherAreas,
   mapPointToEvent,
+  weatherAreaToEvent,
   searchEvents,
 } from "@/lib/events-api";
 import type { Event } from "@/types/event";
@@ -86,6 +88,27 @@ function filtersForGlobeMap(filters: EventFilters): EventFilters | null {
   return { ...filters, categories: ["earthquake"], sort: "recent" };
 }
 
+/** Weather overlay — active NWS alerts in the current viewport. */
+function filtersForGlobeWeather(filters: EventFilters): EventFilters | null {
+  const allCategories = filters.categories.length === 0;
+  const includesWeather = filters.categories.includes("weather");
+  const includesAlert = filters.categories.includes("alert");
+  if (!allCategories && !includesWeather && !includesAlert) {
+    return null;
+  }
+  const categories =
+    allCategories
+      ? (["weather", "alert"] as EventFilters["categories"])
+      : filters.categories.filter(
+          (category): category is "weather" | "alert" =>
+            category === "weather" || category === "alert",
+        );
+  if (categories.length === 0) {
+    return null;
+  }
+  return { ...filters, categories, sort: "recent" };
+}
+
 /** Floating card column: compact, viewport-bounded, scrolls internally.
  * Note: no `relative` here — these cards are placed with `absolute`, and a
  * second position utility would override it (Tailwind orders `.relative`
@@ -116,8 +139,11 @@ export function CommandCenterPage() {
   const [events, setEvents] = useState<Event[]>([]);
   /** Quake markers/heat — always live + filter-synced, independent of list sort/pagination. */
   const [globeEvents, setGlobeEvents] = useState<Event[]>([]);
+  const [globeWeatherEvents, setGlobeWeatherEvents] = useState<Event[]>([]);
   const [globeTotal, setGlobeTotal] = useState(0);
+  const [globeWeatherTotal, setGlobeWeatherTotal] = useState(0);
   const [globeLoading, setGlobeLoading] = useState(false);
+  const [globeWeatherLoading, setGlobeWeatherLoading] = useState(false);
   const [globeLoadingMore, setGlobeLoadingMore] = useState(false);
   /** Bumped on filter change so globe layers remount; not on each batch append. */
   const [globeEpoch, setGlobeEpoch] = useState(0);
@@ -186,9 +212,10 @@ export function CommandCenterPage() {
       events.find((event) => event.id === selectedId) ??
       (selectedDetail?.id === selectedId ? selectedDetail : null) ??
       globeEvents.find((event) => event.id === selectedId) ??
+      globeWeatherEvents.find((event) => event.id === selectedId) ??
       null
     );
-  }, [events, globeEvents, selectedDetail, selectedId]);
+  }, [events, globeEvents, globeWeatherEvents, selectedDetail, selectedId]);
 
   // Hydrate full event detail (title/summary/place) for globe-only selections.
   useEffect(() => {
@@ -340,6 +367,48 @@ export function CommandCenterPage() {
     [committedQuery, filters, getAccessToken, sources],
   );
 
+  const loadWeatherData = useCallback(
+    async (generation: number, bbox: GlobeBBox | null) => {
+      if (committedQuery) {
+        return;
+      }
+      const weatherFilters = filtersForGlobeWeather(filters);
+      if (!weatherFilters) {
+        setGlobeWeatherEvents([]);
+        setGlobeWeatherTotal(0);
+        setGlobeWeatherLoading(false);
+        return;
+      }
+      const token = await getAccessToken();
+      if (!token || generation !== globeGenerationRef.current) {
+        return;
+      }
+      setGlobeWeatherLoading(true);
+      try {
+        const response = await listEventWeatherAreas(token, {
+          filters: weatherFilters,
+          availableSources: sources,
+          bbox,
+          withCount: true,
+        });
+        if (generation !== globeGenerationRef.current) {
+          return;
+        }
+        setGlobeWeatherEvents(response.areas.map(weatherAreaToEvent));
+        setGlobeWeatherTotal(response.total);
+      } catch {
+        if (generation !== globeGenerationRef.current) {
+          return;
+        }
+      } finally {
+        if (generation === globeGenerationRef.current) {
+          setGlobeWeatherLoading(false);
+        }
+      }
+    },
+    [committedQuery, filters, getAccessToken, sources],
+  );
+
   // Camera settled: (re)load the globe scoped to the new viewport bounds.
   const handleViewportChange = useCallback(
     (bbox: GlobeBBox | null) => {
@@ -350,8 +419,9 @@ export function CommandCenterPage() {
       const generation = ++globeGenerationRef.current;
       setGlobeEpoch((epoch) => epoch + 1);
       void loadGlobeData(generation, bbox);
+      void loadWeatherData(generation, bbox);
     },
-    [committedQuery, loadGlobeData],
+    [committedQuery, loadGlobeData, loadWeatherData],
   );
 
   // Load the first page for the current filter + committed search query.
@@ -361,7 +431,9 @@ export function CommandCenterPage() {
     setNewEventsCount(0);
     setEvents([]);
     setGlobeEvents([]);
+    setGlobeWeatherEvents([]);
     setGlobeTotal(0);
+    setGlobeWeatherTotal(0);
     setClusterFocus(null);
     setGlobeEpoch((epoch) => epoch + 1);
     const token = await getAccessToken();
@@ -401,6 +473,7 @@ export function CommandCenterPage() {
         // New globe generation; keep the current viewport scope across filter changes.
         const globeGeneration = ++globeGenerationRef.current;
         void loadGlobeData(globeGeneration, globeBboxRef.current);
+        void loadWeatherData(globeGeneration, globeBboxRef.current);
       }
     } catch (err) {
       if (generation !== queryGenerationRef.current) {
@@ -412,7 +485,7 @@ export function CommandCenterPage() {
         setLoading(false);
       }
     }
-  }, [getAccessToken, committedQuery, filters, sources, searchHitToEvent, loadGlobeData]);
+  }, [getAccessToken, committedQuery, filters, sources, searchHitToEvent, loadGlobeData, loadWeatherData]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch on filter/query change
@@ -484,6 +557,20 @@ export function CommandCenterPage() {
       if (isQuake(event)) {
         setGlobeEvents((current) => mergeGlobeEvent(current, event));
       }
+      if (isWeather(event)) {
+        setGlobeWeatherEvents((current) => {
+          if (event.status === "archived") {
+            return current.filter((item) => item.id !== event.id);
+          }
+          const index = current.findIndex((item) => item.id === event.id);
+          if (index === -1) {
+            return [event, ...current];
+          }
+          const next = [...current];
+          next[index] = event;
+          return next;
+        });
+      }
       if (filters.sort === "recent") {
         setEvents((current) => mergeEvent(current, event));
       } else {
@@ -535,6 +622,7 @@ export function CommandCenterPage() {
         >
           <GlobeViewport
             events={globeEvents}
+            weatherEvents={globeWeatherEvents}
             selectedId={selectedId}
             onSelect={setSelectedId}
             onSelectCluster={handleSelectCluster}
@@ -544,7 +632,9 @@ export function CommandCenterPage() {
             }}
             layers={effectiveLayers}
             globeTotal={globeTotal}
+            globeWeatherTotal={globeWeatherTotal}
             globeLoading={globeLoading}
+            globeWeatherLoading={globeWeatherLoading}
             globeLoadingMore={globeLoadingMore}
             globeEpoch={globeEpoch}
             onViewportChange={handleViewportChange}

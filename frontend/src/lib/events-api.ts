@@ -27,6 +27,28 @@ export interface EventMapResponse {
   limit: number;
 }
 
+export interface EventWeatherArea {
+  id: string;
+  category: Event["category"];
+  severity: Event["severity"];
+  impact_score: number;
+  title?: string | null;
+  status: Event["status"];
+  lat: number;
+  lon: number;
+  occurred_at: string;
+  affected_area?: Event["affected_area"];
+}
+
+export interface EventWeatherMapResponse {
+  areas: EventWeatherArea[];
+  total: number;
+  limit: number;
+}
+
+/** Active weather alerts returned per viewport request (count is low). */
+export const GLOBE_WEATHER_MAX_AREAS = 500;
+
 /**
  * Points fetched per globe map batch. Map points are tiny (~8 fields), and the
  * globe now coalesces rebuilds, so larger batches cut the number of sequential
@@ -161,6 +183,52 @@ export async function listEventMapPoints(
   }
   appendFilterParams(search, params.filters, params.availableSources ?? []);
   return apiGet<EventMapResponse>(`/api/v1/events/map?${search}`, accessToken);
+}
+
+/** Active weather/alert polygons for the globe overlay. */
+export async function listEventWeatherAreas(
+  accessToken: string,
+  params: ListEventsParams & { limit?: number },
+): Promise<EventWeatherMapResponse> {
+  const search = new URLSearchParams();
+  search.set("limit", String(params.limit ?? GLOBE_WEATHER_MAX_AREAS));
+  if (params.offset !== undefined) {
+    search.set("offset", String(params.offset));
+  }
+  if (params.bbox) {
+    search.set("min_lon", String(params.bbox.minLon));
+    search.set("min_lat", String(params.bbox.minLat));
+    search.set("max_lon", String(params.bbox.maxLon));
+    search.set("max_lat", String(params.bbox.maxLat));
+  }
+  if (params.withCount !== undefined) {
+    search.set("with_count", String(params.withCount));
+  }
+  appendFilterParams(search, params.filters, params.availableSources ?? []);
+  return apiGet<EventWeatherMapResponse>(`/api/v1/events/map/weather?${search}`, accessToken);
+}
+
+/** Build a minimal canonical event from a weather map area. */
+export function weatherAreaToEvent(area: EventWeatherArea): Event {
+  return {
+    id: area.id,
+    tenant_id: "",
+    source: "nws",
+    source_event_id: area.id,
+    category: area.category,
+    severity: area.severity,
+    impact_score: area.impact_score,
+    title: area.title ?? undefined,
+    location: { lat: area.lat, lon: area.lon },
+    affected_area: area.affected_area,
+    occurred_at: area.occurred_at,
+    ingested_at: area.occurred_at,
+    status: area.status,
+    verification_status: "verified",
+    confidence: 0,
+    tags: ["weather"],
+    raw: {},
+  };
 }
 
 /** Build a minimal canonical event from a map point for globe layers. */

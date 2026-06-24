@@ -26,7 +26,7 @@ interface LayerItem {
 const ITEMS: LayerItem[] = [
   { key: "quakeDots", icon: CircleDot, label: "Quakes · Dots" },
   { key: "quakeHeat", icon: Flame, label: "Quakes · Heat" },
-  { key: "weather", icon: CloudRain, label: "Weather", disabled: true },
+  { key: "weather", icon: CloudRain, label: "Weather" },
 ];
 
 /**

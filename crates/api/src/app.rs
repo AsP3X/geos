@@ -34,6 +34,7 @@ pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/v1/events", get(events::list))
         .route("/api/v1/events/map", get(events::map))
+        .route("/api/v1/events/map/weather", get(events::map_weather))
         .route("/api/v1/events/sources", get(events::sources))
         .route("/api/v1/events/{id}", get(events::get_by_id))
         .route("/api/v1/connectors", get(connectors::list))

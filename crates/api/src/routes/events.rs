@@ -6,8 +6,9 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use geos_core::db::{
-    get_event, list_event_map_points, list_event_sources, list_events, EventBBox, EventListFilter,
-    EventMapResult, EventSort,
+    get_event, list_event_map_points, list_event_sources, list_event_weather_areas, list_events,
+    EventBBox, EventListFilter, EventMapResult, EventSort, EventWeatherMapResult,
+    WEATHER_MAP_MAX_LIMIT,
 };
 use geos_core::events::{Category, Event, Severity};
 use geos_core::rbac::Permission;
@@ -192,6 +193,59 @@ pub async fn map(
             min_magnitude,
             max_magnitude,
             sort,
+            limit,
+            offset,
+        },
+        with_count,
+    )
+    .await?;
+
+    Ok(Json(result))
+}
+
+/// `GET /api/v1/events/map/weather` — active alert polygons for the globe.
+pub async fn map_weather(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Query(query): Query<ListEventsQuery>,
+) -> Result<Json<EventWeatherMapResult>, ApiError> {
+    auth.require_permission(Permission::EventsRead)?;
+
+    let bbox = parse_bbox(query.min_lon, query.min_lat, query.max_lon, query.max_lat)?;
+    let impact_min = parse_impact(query.impact_min.or(query.min_impact), "impact_min")?;
+    let impact_max = parse_impact(query.impact_max, "impact_max")?;
+    if let (Some(min), Some(max)) = (impact_min, impact_max) {
+        if min > max {
+            return Err(AppError::bad_request("impact_min must be <= impact_max").into());
+        }
+    }
+
+    let categories = parse_categories(query.category.as_deref())?;
+    let severities = parse_severities(query.severity.as_deref())?;
+    let sources = parse_sources(query.source.as_deref());
+
+    let limit = query
+        .limit
+        .unwrap_or(WEATHER_MAP_MAX_LIMIT)
+        .clamp(1, WEATHER_MAP_MAX_LIMIT);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let with_count = query.with_count.unwrap_or(offset == 0);
+
+    let result = list_event_weather_areas(
+        &state.pool,
+        &EventListFilter {
+            tenant_id: auth.tenant_id,
+            bbox,
+            categories,
+            severities,
+            sources,
+            occurred_after: query.occurred_after,
+            occurred_before: query.occurred_before,
+            impact_min,
+            impact_max,
+            min_magnitude: None,
+            max_magnitude: None,
+            sort: EventSort::Recent,
             limit,
             offset,
         },

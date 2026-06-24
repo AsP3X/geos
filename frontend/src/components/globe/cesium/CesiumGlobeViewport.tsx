@@ -56,6 +56,11 @@ import { buildHeatCanvas } from "@/components/globe/cesium/heat";
 import { createPoleUnderlayCanvas, DAYMAP_URL } from "@/components/globe/cesium/pole-underlay";
 import { getTilesSession, sentinel2TemplateUrl } from "@/lib/tiles-api";
 import { GlobeStatusOverlay } from "@/components/globe/cesium/GlobeStatusOverlay";
+import {
+  rebuildWeatherLayer,
+  refreshWeatherSelection,
+  weatherEventIdFromPick,
+} from "@/components/globe/cesium/weather-areas";
 
 /** EOX licensing credit shown in the Cesium credit container. */
 const EOX_CREDIT = "Sentinel-2 cloudless by EOX IT Services GmbH (CC-BY 4.0)";
@@ -95,19 +100,21 @@ const COASTLINE_LOD = { url: "/geo/ne_50m_land.geojson", maxHeightMeters: 4.0e6 
 const POSITION_CACHE_MAX = 250_000;
 
 /** Picked-primitive identity stored on each Cesium point/label. */
-type PickId =
-  | { kind: "single"; event: Event }
-  | { kind: "cluster"; cluster: GlobeCluster };
+type PickId = { kind: "single"; event: Event } | { kind: "cluster"; cluster: GlobeCluster };
 
 interface CesiumGlobeViewportProps {
   events: Event[];
+  /** Active weather/alert overlays (polygons or fallback markers). */
+  weatherEvents?: Event[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onSelectCluster?: (cluster: GlobeCluster) => void;
   onClearSelection?: () => void;
   layers: GlobeLayers;
   globeTotal?: number;
+  globeWeatherTotal?: number;
   globeLoading?: boolean;
+  globeWeatherLoading?: boolean;
   globeLoadingMore?: boolean;
   globeEpoch?: number;
   /**
@@ -126,13 +133,16 @@ interface CesiumGlobeViewportProps {
  */
 export function CesiumGlobeViewport({
   events,
+  weatherEvents = [],
   selectedId,
   onSelect,
   onSelectCluster,
   onClearSelection,
   layers,
   globeTotal,
+  globeWeatherTotal,
   globeLoading,
+  globeWeatherLoading,
   globeLoadingMore,
   globeEpoch = 0,
   onViewportChange,
@@ -146,6 +156,7 @@ export function CesiumGlobeViewport({
   const clustersRef = useRef<PointPrimitiveCollection | null>(null);
   const selectionRef = useRef<PointPrimitiveCollection | null>(null);
   const heatLayerRef = useRef<ImageryLayer | null>(null);
+  const weatherDataSourceRef = useRef<GeoJsonDataSource | null>(null);
   // Clustering runs in a Web Worker over typed arrays; the main thread keeps the
   // matching `Event[]` to map worker-returned indices back for rendering/picking.
   const workerRef = useRef<Worker | null>(null);
@@ -177,6 +188,7 @@ export function CesiumGlobeViewport({
   const prevQuakeCountRef = useRef(0);
   const lastApplyAtRef = useRef(0);
   const quakeEventsRef = useRef<Event[]>([]);
+  const weatherEventsRef = useRef<Event[]>([]);
   // Viewport-scoped loading: report the camera bounds on settle so the page can
   // fetch only the visible quakes. `lastReportedBboxRef` suppresses tiny pans.
   const onViewportChangeRef = useRef(onViewportChange);
@@ -199,6 +211,7 @@ export function CesiumGlobeViewport({
 
   const quakeEvents = useMemo(() => events.filter(isQuake), [events]);
   quakeEventsRef.current = quakeEvents;
+  weatherEventsRef.current = weatherEvents;
 
   // ── Mount: build the viewer, imagery, handlers (once) ───────────────────────
   useEffect(() => {
@@ -258,6 +271,11 @@ export function CesiumGlobeViewport({
     const handler = new ScreenSpaceEventHandler(scene.canvas);
     handler.setInputAction((movement: ScreenSpaceEventHandler.PositionedEvent) => {
       const picked = scene.pick(movement.position);
+      const weatherId = weatherEventIdFromPick(picked, weatherEventsRef.current);
+      if (weatherId) {
+        onSelectRef.current(weatherId);
+        return;
+      }
       const id = picked?.id as PickId | undefined;
       if (id && typeof id === "object" && "kind" in id) {
         if (id.kind === "single") {
@@ -991,10 +1009,34 @@ export function CesiumGlobeViewport({
     return () => window.clearTimeout(timer);
   }, [layers.quakeHeat, quakeEvents, globeEpoch, globeLoadingMore]);
 
+  // ── Weather overlay: semi-transparent alert polygons / fallback markers ───
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) {
+      return;
+    }
+    let cancelled = false;
+    void rebuildWeatherLayer(
+      viewer,
+      weatherDataSourceRef,
+      weatherEvents,
+      selectedId,
+      layers.weather,
+    ).then(() => {
+      if (cancelled) {
+        return;
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [weatherEvents, layers.weather, selectedId, globeEpoch]);
+
   // ── Selection highlight ─────────────────────────────────────────────────────
   useEffect(() => {
     applySelectionHighlight();
-  }, [selectedId, events]);
+    refreshWeatherSelection(weatherDataSourceRef.current, weatherEvents, selectedId);
+  }, [selectedId, events, weatherEvents]);
 
   return (
     <div className="relative size-full min-h-full overflow-hidden bg-[#05070d]">
@@ -1003,8 +1045,11 @@ export function CesiumGlobeViewport({
       <div className="pointer-events-none absolute inset-0 [background:radial-gradient(circle_at_50%_45%,transparent_42%,rgba(5,7,13,0.55)_100%)]" />
       <GlobeStatusOverlay
         events={events}
+        weatherEvents={weatherEvents}
         globeTotal={globeTotal}
+        globeWeatherTotal={globeWeatherTotal}
         globeLoading={globeLoading}
+        globeWeatherLoading={globeWeatherLoading}
         globeLoadingMore={globeLoadingMore}
       />
     </div>

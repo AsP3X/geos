@@ -10,7 +10,7 @@ export interface GlobeLayers {
   quakeDots: boolean;
   /** Earthquake heat field (intensity scaled by magnitude). */
   quakeHeat: boolean;
-  /** Weather layer — placeholder, not yet implemented. */
+  /** Weather layer — NWS alert polygons and fallback markers. */
   weather: boolean;
 }
 
@@ -23,6 +23,11 @@ export const DEFAULT_LAYERS: GlobeLayers = {
 /** Events that belong to the quake layers. */
 export function isQuake(event: Event): boolean {
   return event.category === "earthquake";
+}
+
+/** Events rendered on the weather alert layer. */
+export function isWeather(event: Event): boolean {
+  return event.category === "weather" || event.category === "alert";
 }
 
 /**

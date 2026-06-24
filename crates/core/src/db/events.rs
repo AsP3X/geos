@@ -84,13 +84,14 @@ pub async fn upsert_event(pool: &PgPool, event: &Event) -> Result<()> {
         .embedding
         .as_ref()
         .map(|values| format_pgvector(values.as_slice()));
+    let affected_area_json = affected_area_geojson(event);
 
     sqlx::query(
         r#"
         INSERT INTO events (
             id, tenant_id, source, source_event_id, category, severity, impact_score,
             magnitude, title, summary, body, original_text, translated_text, language,
-            location, country, region, place_name,
+            location, affected_area, country, region, place_name,
             occurred_at, detected_at, ingested_at,
             status, verification_status, confidence,
             tags, url, raw, embedding
@@ -99,10 +100,14 @@ pub async fn upsert_event(pool: &PgPool, event: &Event) -> Result<()> {
             $5::event_category, $6::event_severity, $7,
             $8, $9, $10, $11, $12, $13, $14,
             ST_SetSRID(ST_MakePoint($15, $16), 4326)::geography,
-            $17, $18, $19,
-            $20, $21, $22,
-            $23::event_status, $24::verification_status, $25,
-            $26, $27, $28::jsonb, $29::vector
+            CASE
+                WHEN $17 IS NULL THEN NULL
+                ELSE ST_SetSRID(ST_GeomFromGeoJSON($17), 4326)
+            END,
+            $18, $19, $20,
+            $21, $22, $23,
+            $24::event_status, $25::verification_status, $26,
+            $27, $28, $29::jsonb, $30::vector
         )
         ON CONFLICT (tenant_id, source, source_event_id, occurred_at) DO UPDATE SET
             category = EXCLUDED.category,
@@ -116,6 +121,7 @@ pub async fn upsert_event(pool: &PgPool, event: &Event) -> Result<()> {
             translated_text = EXCLUDED.translated_text,
             language = EXCLUDED.language,
             location = EXCLUDED.location,
+            affected_area = EXCLUDED.affected_area,
             country = EXCLUDED.country,
             region = EXCLUDED.region,
             place_name = EXCLUDED.place_name,
@@ -146,6 +152,7 @@ pub async fn upsert_event(pool: &PgPool, event: &Event) -> Result<()> {
     .bind(&event.language)
     .bind(event.location.lon)
     .bind(event.location.lat)
+    .bind(affected_area_json)
     .bind(&event.country)
     .bind(&event.region)
     .bind(&event.place_name)
@@ -187,7 +194,7 @@ fn build_backfill_upsert(batch: &[Event]) -> QueryBuilder<'_, sqlx::Postgres> {
         INSERT INTO events (
             id, tenant_id, source, source_event_id, category, severity, impact_score,
             magnitude, title, summary, body, original_text, translated_text, language,
-            location, country, region, place_name,
+            location, affected_area, country, region, place_name,
             occurred_at, detected_at, ingested_at,
             status, verification_status, confidence,
             tags, url, raw, embedding
@@ -202,6 +209,7 @@ fn build_backfill_upsert(batch: &[Event]) -> QueryBuilder<'_, sqlx::Postgres> {
             .embedding
             .as_ref()
             .map(|values| format_pgvector(values.as_slice()));
+        let affected_area_json = affected_area_geojson(event);
         builder.push("(");
         builder.push_bind(event.id);
         builder.push(", ");
@@ -235,6 +243,13 @@ fn build_backfill_upsert(batch: &[Event]) -> QueryBuilder<'_, sqlx::Postgres> {
         builder.push(", ");
         builder.push_bind(event.location.lat);
         builder.push("), 4326)::geography, ");
+        if let Some(ref geo) = affected_area_json {
+            builder.push("ST_SetSRID(ST_GeomFromGeoJSON(");
+            builder.push_bind(geo.clone());
+            builder.push("), 4326), ");
+        } else {
+            builder.push("NULL, ");
+        }
         builder.push_bind(&event.country);
         builder.push(", ");
         builder.push_bind(&event.region);
@@ -277,6 +292,7 @@ fn build_backfill_upsert(batch: &[Event]) -> QueryBuilder<'_, sqlx::Postgres> {
             translated_text = EXCLUDED.translated_text,
             language = EXCLUDED.language,
             location = EXCLUDED.location,
+            affected_area = EXCLUDED.affected_area,
             country = EXCLUDED.country,
             region = EXCLUDED.region,
             place_name = EXCLUDED.place_name,
@@ -366,6 +382,10 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Even
             category::text AS category, severity::text AS severity, impact_score,
             magnitude, title, summary, body, original_text, translated_text, language,
             ST_X(location::geometry) AS lon, ST_Y(location::geometry) AS lat,
+            CASE
+                WHEN affected_area IS NULL THEN NULL
+                ELSE ST_AsGeoJSON(affected_area)::jsonb
+            END AS affected_area,
             country, region, place_name,
             occurred_at, detected_at, ingested_at,
             status::text AS status, verification_status::text AS verification_status,
@@ -380,7 +400,7 @@ pub async fn list_events(pool: &PgPool, filter: &EventListFilter) -> Result<Even
     builder.push_bind(SYSTEM_TENANT_ID);
     builder.push(")");
 
-    push_event_filter_predicates(&mut builder, filter);
+    push_event_filter_predicates(&mut builder, filter, true);
     push_event_order(&mut builder, filter);
     builder.push(" LIMIT ");
     builder.push_bind(filter.limit);
@@ -407,7 +427,7 @@ pub async fn count_events(pool: &PgPool, filter: &EventListFilter) -> Result<i64
     builder.push(", ");
     builder.push_bind(SYSTEM_TENANT_ID);
     builder.push(")");
-    push_event_filter_predicates(&mut builder, filter);
+    push_event_filter_predicates(&mut builder, filter, true);
     builder
         .build_query_scalar::<i64>()
         .fetch_one(pool)
@@ -450,7 +470,7 @@ pub async fn list_event_map_points(
     builder.push_bind(SYSTEM_TENANT_ID);
     builder.push(")");
 
-    push_event_filter_predicates(&mut builder, filter);
+    push_event_filter_predicates(&mut builder, filter, true);
     push_event_order(&mut builder, filter);
     builder.push(" LIMIT ");
     builder.push_bind(filter.limit);
@@ -468,22 +488,200 @@ pub async fn list_event_map_points(
     })
 }
 
+/// Maximum active weather/alert areas returned for the globe overlay.
+pub const WEATHER_MAP_MAX_LIMIT: i64 = 500;
+
+/// Compact weather-alert payload for globe polygon rendering.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct EventWeatherArea {
+    /// Event id.
+    pub id: Uuid,
+    /// Canonical category (snake_case string).
+    pub category: String,
+    /// Severity tier (snake_case string).
+    pub severity: String,
+    /// Impact score 0–100.
+    pub impact_score: i16,
+    /// Short title / headline when available.
+    pub title: Option<String>,
+    /// Lifecycle status (snake_case string).
+    pub status: String,
+    /// WGS84 latitude (centroid fallback).
+    pub lat: f64,
+    /// WGS84 longitude (centroid fallback).
+    pub lon: f64,
+    /// When the alert became effective.
+    pub occurred_at: DateTime<Utc>,
+    /// GeoJSON geometry for the alert boundary, when known.
+    pub affected_area: Option<serde_json::Value>,
+}
+
+/// Globe weather payload: active alert polygons/points plus the matching count.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EventWeatherMapResult {
+    /// Weather areas returned (may be capped by `limit`).
+    pub areas: Vec<EventWeatherArea>,
+    /// Total active rows matching the filter (ignoring pagination).
+    pub total: i64,
+    /// Applied page size cap.
+    pub limit: i64,
+}
+
+/// Active weather/alert events with optional polygon geometry for the globe.
+pub async fn list_event_weather_areas(
+    pool: &PgPool,
+    filter: &EventListFilter,
+    with_count: bool,
+) -> Result<EventWeatherMapResult> {
+    if weather_category_values(filter).is_empty() {
+        return Ok(EventWeatherMapResult {
+            areas: Vec::new(),
+            total: 0,
+            limit: filter.limit.min(WEATHER_MAP_MAX_LIMIT),
+        });
+    }
+
+    let total = if with_count {
+        count_active_weather_events(pool, filter).await?
+    } else {
+        0
+    };
+
+    let mut builder = sqlx::QueryBuilder::new(
+        r#"
+        SELECT
+            id,
+            category::text AS category,
+            severity::text AS severity,
+            impact_score,
+            title,
+            status::text AS status,
+            ST_Y(location::geometry) AS lat,
+            ST_X(location::geometry) AS lon,
+            occurred_at,
+            CASE
+                WHEN affected_area IS NULL THEN NULL
+                ELSE ST_AsGeoJSON(affected_area)::jsonb
+            END AS affected_area
+        FROM events
+        WHERE tenant_id IN ("#,
+    );
+    builder.push_bind(filter.tenant_id);
+    builder.push(", ");
+    builder.push_bind(SYSTEM_TENANT_ID);
+    builder.push(")");
+    builder.push(" AND status = 'active'::event_status");
+    builder.push(" AND category = ANY(");
+    builder.push_bind(weather_category_values(filter));
+    builder.push("::event_category[])");
+
+    push_weather_spatial_predicate(&mut builder, filter);
+    push_event_filter_predicates(&mut builder, filter, false);
+
+    builder.push(" ORDER BY impact_score DESC, occurred_at DESC LIMIT ");
+    builder.push_bind(filter.limit.min(WEATHER_MAP_MAX_LIMIT));
+    builder.push(" OFFSET ");
+    builder.push_bind(filter.offset);
+
+    let areas = builder
+        .build_query_as::<EventWeatherArea>()
+        .fetch_all(pool)
+        .await?;
+
+    Ok(EventWeatherMapResult {
+        areas,
+        total,
+        limit: filter.limit.min(WEATHER_MAP_MAX_LIMIT),
+    })
+}
+
+async fn count_active_weather_events(pool: &PgPool, filter: &EventListFilter) -> Result<i64> {
+    let mut builder =
+        sqlx::QueryBuilder::new("SELECT COUNT(*)::bigint FROM events WHERE tenant_id IN (");
+    builder.push_bind(filter.tenant_id);
+    builder.push(", ");
+    builder.push_bind(SYSTEM_TENANT_ID);
+    builder.push(")");
+    builder.push(" AND status = 'active'::event_status");
+    builder.push(" AND category = ANY(");
+    builder.push_bind(weather_category_values(filter));
+    builder.push("::event_category[])");
+    push_weather_spatial_predicate(&mut builder, filter);
+    push_event_filter_predicates(&mut builder, filter, false);
+    builder
+        .build_query_scalar::<i64>()
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into)
+}
+
+fn weather_categories(filter: &EventListFilter) -> Vec<Category> {
+    let allowed = [Category::Weather, Category::Alert];
+    if filter.categories.is_empty() {
+        return allowed.to_vec();
+    }
+    filter
+        .categories
+        .iter()
+        .copied()
+        .filter(|category| allowed.contains(category))
+        .collect()
+}
+
+fn weather_category_values(filter: &EventListFilter) -> Vec<&'static str> {
+    weather_categories(filter)
+        .iter()
+        .map(|category| pg_category(*category))
+        .collect()
+}
+
+/// Match alerts whose polygon or centroid intersects the viewport bbox.
+fn push_weather_spatial_predicate(
+    builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+    filter: &EventListFilter,
+) {
+    let Some(bbox) = filter.bbox else {
+        return;
+    };
+    builder.push(" AND (");
+    builder.push("(affected_area IS NOT NULL AND ST_Intersects(affected_area, ST_MakeEnvelope(");
+    builder.push_bind(bbox.min_lon);
+    builder.push(", ");
+    builder.push_bind(bbox.min_lat);
+    builder.push(", ");
+    builder.push_bind(bbox.max_lon);
+    builder.push(", ");
+    builder.push_bind(bbox.max_lat);
+    builder.push(", 4326))) OR ST_Intersects(location::geometry, ST_MakeEnvelope(");
+    builder.push_bind(bbox.min_lon);
+    builder.push(", ");
+    builder.push_bind(bbox.min_lat);
+    builder.push(", ");
+    builder.push_bind(bbox.max_lon);
+    builder.push(", ");
+    builder.push_bind(bbox.max_lat);
+    builder.push(", 4326)))");
+}
+
 /// Append bbox/dimension/range predicates to a builder whose
 /// `WHERE tenant_id IN (...)` clause is already in place.
 fn push_event_filter_predicates(
     builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
     filter: &EventListFilter,
+    apply_point_bbox: bool,
 ) {
-    if let Some(bbox) = filter.bbox {
-        builder.push(" AND ST_Intersects(location::geometry, ST_MakeEnvelope(");
-        builder.push_bind(bbox.min_lon);
-        builder.push(", ");
-        builder.push_bind(bbox.min_lat);
-        builder.push(", ");
-        builder.push_bind(bbox.max_lon);
-        builder.push(", ");
-        builder.push_bind(bbox.max_lat);
-        builder.push(", 4326))");
+    if apply_point_bbox {
+        if let Some(bbox) = filter.bbox {
+            builder.push(" AND ST_Intersects(location::geometry, ST_MakeEnvelope(");
+            builder.push_bind(bbox.min_lon);
+            builder.push(", ");
+            builder.push_bind(bbox.min_lat);
+            builder.push(", ");
+            builder.push_bind(bbox.max_lon);
+            builder.push(", ");
+            builder.push_bind(bbox.max_lat);
+            builder.push(", 4326))");
+        }
     }
 
     if !filter.categories.is_empty() {
@@ -589,6 +787,10 @@ pub async fn get_event(pool: &PgPool, tenant_id: Uuid, event_id: Uuid) -> Result
             category::text AS category, severity::text AS severity, impact_score,
             magnitude, title, summary, body, original_text, translated_text, language,
             ST_X(location::geometry) AS lon, ST_Y(location::geometry) AS lat,
+            CASE
+                WHEN affected_area IS NULL THEN NULL
+                ELSE ST_AsGeoJSON(affected_area)::jsonb
+            END AS affected_area,
             country, region, place_name,
             occurred_at, detected_at, ingested_at,
             status::text AS status, verification_status::text AS verification_status,
@@ -625,6 +827,7 @@ struct EventListRow {
     language: Option<String>,
     lon: f64,
     lat: f64,
+    affected_area: Option<serde_json::Value>,
     country: Option<String>,
     region: Option<String>,
     place_name: Option<String>,
@@ -659,6 +862,7 @@ impl EventListRow {
             language: self.language,
             lon: self.lon,
             lat: self.lat,
+            affected_area: self.affected_area,
             country: self.country,
             region: self.region,
             place_name: self.place_name,
@@ -694,6 +898,7 @@ struct EventRow {
     language: Option<String>,
     lon: f64,
     lat: f64,
+    affected_area: Option<serde_json::Value>,
     country: Option<String>,
     region: Option<String>,
     place_name: Option<String>,
@@ -730,7 +935,7 @@ impl EventRow {
                 lon: self.lon,
                 lat: self.lat,
             },
-            affected_area: None,
+            affected_area: self.affected_area,
             country: self.country,
             region: self.region,
             place_name: self.place_name,
@@ -849,6 +1054,10 @@ fn format_pgvector(values: &[f32]) -> String {
     format!("[{body}]")
 }
 
+fn affected_area_geojson(event: &Event) -> Option<String> {
+    event.affected_area.as_ref().map(ToString::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,7 +1124,7 @@ mod tests {
         builder.push(", ");
         builder.push_bind(SYSTEM_TENANT_ID);
         builder.push(")");
-        push_event_filter_predicates(&mut builder, filter);
+        push_event_filter_predicates(&mut builder, filter, true);
         push_event_order(&mut builder, filter);
         builder.push(" LIMIT ");
         builder.push_bind(filter.limit);

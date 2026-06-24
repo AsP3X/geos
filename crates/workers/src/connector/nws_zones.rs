@@ -60,8 +60,8 @@ impl NwsZoneResolver {
                 stats.unresolved += 1;
                 continue;
             }
-            if let Some((lon, lat)) = self.resolve_centroid(&ugc_codes).await? {
-                inject_point_geometry(&mut record.payload, lon, lat);
+            if let Some(geometry) = self.resolve_zone_geometry(&ugc_codes).await? {
+                inject_geometry(&mut record.payload, geometry);
                 stats.hydrated += 1;
             } else {
                 stats.unresolved += 1;
@@ -78,23 +78,37 @@ impl NwsZoneResolver {
         Ok(stats)
     }
 
-    async fn resolve_centroid(&mut self, ugc_codes: &[String]) -> Result<Option<(f64, f64)>> {
-        let mut lon_sum = 0.0;
-        let mut lat_sum = 0.0;
-        let mut count = 0usize;
+    async fn resolve_zone_geometry(&mut self, ugc_codes: &[String]) -> Result<Option<Value>> {
+        let mut polygon_rings: Vec<Value> = Vec::new();
         for ugc in ugc_codes {
             if let Some(geom) = self.fetch_zone_geometry(ugc).await? {
-                if let Some((lon, lat)) = geometry_centroid(&geom) {
-                    lon_sum += lon;
-                    lat_sum += lat;
-                    count += 1;
+                match geom.get("type").and_then(Value::as_str) {
+                    Some("Polygon") => {
+                        if let Some(coords) = geom.get("coordinates") {
+                            polygon_rings.push(coords.clone());
+                        }
+                    }
+                    Some("MultiPolygon") => {
+                        if let Some(parts) = geom.get("coordinates").and_then(Value::as_array) {
+                            polygon_rings.extend(parts.iter().cloned());
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
-        if count == 0 {
+        if polygon_rings.is_empty() {
             Ok(None)
+        } else if polygon_rings.len() == 1 {
+            Ok(Some(json!({
+                "type": "Polygon",
+                "coordinates": polygon_rings[0],
+            })))
         } else {
-            Ok(Some((lon_sum / count as f64, lat_sum / count as f64)))
+            Ok(Some(json!({
+                "type": "MultiPolygon",
+                "coordinates": polygon_rings,
+            })))
         }
     }
 
@@ -163,15 +177,9 @@ fn ugc_zone_path(ugc: &str) -> Option<(&'static str, &str)> {
     Some((zone_type, ugc))
 }
 
-pub(crate) fn inject_point_geometry(payload: &mut Value, lon: f64, lat: f64) {
+pub(crate) fn inject_geometry(payload: &mut Value, geometry: Value) {
     if let Some(obj) = payload.as_object_mut() {
-        obj.insert(
-            "geometry".to_owned(),
-            json!({
-                "type": "Point",
-                "coordinates": [lon, lat]
-            }),
-        );
+        obj.insert("geometry".to_owned(), geometry);
     }
 }
 
@@ -258,9 +266,15 @@ mod tests {
     }
 
     #[test]
-    fn inject_point_geometry_sets_feature_geometry() {
+    fn inject_geometry_sets_feature_geometry() {
         let mut payload = json!({ "geometry": null });
-        inject_point_geometry(&mut payload, -81.0, 37.5);
+        inject_geometry(
+            &mut payload,
+            json!({
+                "type": "Point",
+                "coordinates": [-81.0, 37.5]
+            }),
+        );
         assert_eq!(payload["geometry"]["type"], "Point");
         assert_eq!(payload["geometry"]["coordinates"][0], -81.0);
     }

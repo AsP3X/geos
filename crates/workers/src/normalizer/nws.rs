@@ -72,6 +72,7 @@ pub fn normalize_nws_record(record: &RawRecord, tenant_id: Uuid) -> Result<Event
     };
 
     let url = feature.id.clone();
+    let affected_area = extract_affected_area(&feature.geometry);
 
     let now = Utc::now();
 
@@ -91,7 +92,7 @@ pub fn normalize_nws_record(record: &RawRecord, tenant_id: Uuid) -> Result<Event
         translated_text: None,
         language: Some("en".to_owned()),
         location: GeoPoint { lon, lat },
-        affected_area: None,
+        affected_area,
         country: Some("US".to_owned()),
         region: None,
         place_name,
@@ -154,6 +155,20 @@ fn parse_nws_time(value: Option<&str>) -> Option<DateTime<Utc>> {
             .ok()
             .map(|dt| dt.with_timezone(&Utc))
     })
+}
+
+/// GeoJSON geometry for polygonal alert boundaries (Polygon / MultiPolygon only).
+fn extract_affected_area(geometry: &Option<NwsGeometry>) -> Option<serde_json::Value> {
+    let geometry = geometry.as_ref()?;
+    let geom_type = geometry.geometry_type.as_deref()?;
+    let coordinates = geometry.coordinates.as_ref()?;
+    match geom_type {
+        "Polygon" | "MultiPolygon" => Some(serde_json::json!({
+            "type": geom_type,
+            "coordinates": coordinates,
+        })),
+        _ => None,
+    }
 }
 
 /// Centroid of Point, Polygon, or MultiPolygon geometry (first ring only).
@@ -283,6 +298,8 @@ mod tests {
         assert!((event.location.lat - 37.78).abs() < 0.01);
         assert!(event.impact_score > 0);
         assert!(event.raw.is_object());
+        let area = event.affected_area.as_ref();
+        assert!(area.is_some_and(|value| value["type"] == "Polygon"));
         Ok(())
     }
 

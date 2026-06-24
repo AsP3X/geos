@@ -19,9 +19,10 @@ pub use connectors::{
     mark_backfill_complete, reconcile_backfill_window, touch_live_run, ConnectorState,
 };
 pub use events::{
-    count_events, get_event, list_event_map_points, list_event_sources, list_events, upsert_event,
-    upsert_events_backfill, EventBBox, EventListFilter, EventListResult, EventMapPoint,
-    EventMapResult, EventSort,
+    count_events, get_event, list_event_map_points, list_event_sources, list_event_weather_areas,
+    list_events, upsert_event, upsert_events_backfill, EventBBox, EventListFilter, EventListResult,
+    EventMapPoint, EventMapResult, EventSort, EventWeatherArea, EventWeatherMapResult,
+    WEATHER_MAP_MAX_LIMIT,
 };
 pub use notify::{
     notify_event_upsert, EventNotifyAction, EventNotifyPayload, EVENT_NOTIFY_CHANNEL,
