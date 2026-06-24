@@ -103,10 +103,31 @@ GEOS_CORS_ORIGINS=https://geos.yourdomain.com
 Then restart the API: `docker compose up -d api`. In NPM, ensure the API proxy
 forwards **OPTIONS** preflight requests (Custom Location → enable if needed).
 
+**If the browser reports CORS but the API URL returns 502**, the problem is NPM
+connectivity, not CORS. Run on the server:
+
+```bash
+./scripts/verify-deploy.sh
+PUBLIC_API=https://api.yourdomain.com PUBLIC_ORIGIN=https://yourdomain.com ./scripts/verify-deploy.sh
+```
+
+NPM proxy host for the API subdomain (both containers must share `proxy-network`):
+
+| Setting | Value |
+| --- | --- |
+| Scheme | HTTP |
+| Forward hostname | `geos-api` |
+| Forward port | `8080` |
+| Websockets | On |
+
+Do **not** use `docker-compose.local.yml` on the server — it removes `geos-api`
+from `proxy-network` and causes 502 when NPM forwards by container name.
+
 ## Dev scripts
 
 | Script | Purpose |
 | --- | --- |
+| `scripts/verify-deploy.sh` | Check API reachability + CORS preflight (run on server before browser debug) |
 | `scripts/gen-env.sh` | Create `.env` from `.env.example` and generate random secrets |
 | `scripts/dev.sh` | Start data services + API/workers/frontend for local dev |
 | `scripts/db.sh` | Manage the dev Postgres container (`up`/`down`/`logs`/`psql`) |

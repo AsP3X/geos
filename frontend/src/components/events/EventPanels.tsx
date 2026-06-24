@@ -11,7 +11,7 @@ const SEVERITY_LABEL: Record<Event["severity"], string> = {
 };
 
 const SEVERITY_DOT: Record<Event["severity"], string> = {
-  info: "bg-foreground/40",
+  info: "bg-teal-400",
   low: "bg-sky-400",
   moderate: "bg-primary",
   high: "bg-orange-500",

@@ -1,9 +1,9 @@
 import { Color } from "cesium";
 import type { Event } from "@/types/event";
 
-/** Severity → hex, matching the r3f globe palette (`severity-colors.ts`). */
+/** Severity → hex for globe markers (tuned for the dark Cesium basemap). */
 const SEVERITY_HEX: Record<Event["severity"], string> = {
-  info: "#94a3b8",
+  info: "#2dd4bf",
   low: "#38bdf8",
   moderate: "#f59e0b",
   high: "#f97316",
