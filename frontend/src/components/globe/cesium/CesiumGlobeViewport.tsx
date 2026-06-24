@@ -30,7 +30,8 @@ import {
   type ScreenClusters,
 } from "@/components/globe/cesium/clusters";
 import {
-  clusterGlyphStyles,
+  clusterDotStyle,
+  dotPixelScaleForHeight,
   QUAKE_DOT_PIXEL_SIZE,
   quakePointStyle,
   selectionRingStyle,
@@ -122,6 +123,7 @@ export function CesiumGlobeViewport({
   const heatLayerRef = useRef<ImageryLayer | null>(null);
   const indexRef = useRef<ClusterIndex>(new ClusterIndex([]));
   const lastLevelRef = useRef<number>(-1);
+  const lastDotScaleKeyRef = useRef<number>(-1);
   const loadedVectorUrls = useRef<Set<string>>(new Set());
   // Latest rendered singles/clusters so the selection ring can be placed on the
   // marker actually on screen (a cluster bubble or the event's own dot).
@@ -182,7 +184,7 @@ export function CesiumGlobeViewport({
     controller.maximumZoomDistance = MAX_ZOOM_METERS;
     controller.enableCollisionDetection = true;
 
-    // Imperative primitive collections for dots, clusters, selection.
+    // Imperative primitive collections for quake dots and selection ring.
     const singles = scene.primitives.add(new PointPrimitiveCollection());
     const clusters = scene.primitives.add(new PointPrimitiveCollection());
     const selection = scene.primitives.add(new PointPrimitiveCollection());
@@ -364,7 +366,7 @@ export function CesiumGlobeViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-once viewer; props read via refs
   }, []);
 
-  // ── Cluster (dots + halos) rebuild ──────────────────────────────────────────
+  // ── Cluster dot rebuild ─────────────────────────────────────────────────────
   function rebuildClusters() {
     const viewer = viewerRef.current;
     const singles = singlesRef.current;
@@ -377,6 +379,7 @@ export function CesiumGlobeViewport({
       singles.removeAll();
       clusters.removeAll();
       lastLevelRef.current = -1;
+      lastDotScaleKeyRef.current = -1;
       lastResultRef.current = null;
       return;
     }
@@ -389,11 +392,15 @@ export function CesiumGlobeViewport({
     const { level, result } = indexRef.current.forDesiredDeg(deg);
     lastResultRef.current = result;
 
-    // Skip the rebuild when neither the LOD level nor the event set changed.
-    if (level === lastLevelRef.current) {
+    const dotScale = dotPixelScaleForHeight(height, MAX_ZOOM_METERS);
+    const dotScaleKey = Math.round(dotScale * 20);
+
+    // Skip when cluster LOD and dot size are both unchanged.
+    if (level === lastLevelRef.current && dotScaleKey === lastDotScaleKeyRef.current) {
       return;
     }
     lastLevelRef.current = level;
+    lastDotScaleKeyRef.current = dotScaleKey;
 
     singles.removeAll();
     clusters.removeAll();
@@ -401,7 +408,7 @@ export function CesiumGlobeViewport({
     for (const event of result.singles) {
       singles.add({
         position: Cartesian3.fromDegrees(event.location.lon, event.location.lat),
-        ...quakePointStyle(event.severity),
+        ...quakePointStyle(event.severity, dotScale),
         id: { kind: "single", event } satisfies PickId,
       });
     }
@@ -409,20 +416,18 @@ export function CesiumGlobeViewport({
     for (const cluster of result.clusters) {
       const position = Cartesian3.fromDegrees(cluster.lon, cluster.lat);
       const pickId: PickId = { kind: "cluster", cluster };
-      for (const glyph of clusterGlyphStyles(cluster.severity)) {
-        clusters.add({
-          position,
-          ...glyph,
-          id: pickId,
-        });
-      }
+      clusters.add({
+        position,
+        ...clusterDotStyle(cluster.severity, dotScale),
+        id: pickId,
+      });
     }
   }
 
   // ── Selection highlight, aligned to the visible marker ──────────────────────
   // Places the ring on the marker the user actually sees: the cluster bubble
-  // when the selected event is aggregated into one (its centroid differs from
-  // the member's raw coordinate), otherwise the event's own dot. Reads refs so
+  // when the selected event is aggregated into one (anchored on the top-impact
+  // member, which may differ from other members), otherwise the event's own dot. Reads refs so
   // it can be called from both the mount-time `rebuildClusters` and the effect.
   function applySelectionHighlight() {
     const selection = selectionRef.current;
@@ -435,17 +440,19 @@ export function CesiumGlobeViewport({
       return;
     }
 
+    const viewer = viewerRef.current;
+    const height = viewer?.camera.positionCartographic?.height ?? MAX_ZOOM_METERS;
+    const dotScale = dotPixelScaleForHeight(height, MAX_ZOOM_METERS);
+
     const cluster = lastResultRef.current?.clusters.find((item) =>
       item.members.some((member) => member.id === selectedId),
     );
     if (cluster) {
       const position = Cartesian3.fromDegrees(cluster.lon, cluster.lat);
-      for (const glyph of clusterGlyphStyles(cluster.severity)) {
-        selection.add({ position, ...glyph });
-      }
+      selection.add({ position, ...clusterDotStyle(cluster.severity, dotScale) });
       selection.add({
         position,
-        ...selectionRingStyle(22),
+        ...selectionRingStyle(QUAKE_DOT_PIXEL_SIZE * dotScale + 10),
       });
       return;
     }
@@ -461,11 +468,11 @@ export function CesiumGlobeViewport({
     // hydrated from detail) is still visible inside the ring.
     selection.add({
       position,
-      ...quakePointStyle(event.severity, QUAKE_DOT_PIXEL_SIZE + 2),
+      ...quakePointStyle(event.severity, dotScale, QUAKE_DOT_PIXEL_SIZE + 2),
     });
     selection.add({
       position,
-      ...selectionRingStyle(24),
+      ...selectionRingStyle((QUAKE_DOT_PIXEL_SIZE + 2) * dotScale + 8),
     });
   }
 
@@ -548,6 +555,7 @@ export function CesiumGlobeViewport({
   useEffect(() => {
     indexRef.current = new ClusterIndex(quakeEvents);
     lastLevelRef.current = -1;
+    lastDotScaleKeyRef.current = -1;
     rebuildClusters();
     applySelectionHighlight();
     void loadVectorOverlays();
@@ -556,6 +564,7 @@ export function CesiumGlobeViewport({
   // ── React to layer toggles (dots) ───────────────────────────────────────────
   useEffect(() => {
     lastLevelRef.current = -1;
+    lastDotScaleKeyRef.current = -1;
     rebuildClusters();
     applySelectionHighlight();
   }, [layers.quakeDots]);

@@ -1,52 +1,65 @@
-import { Cartesian3, Color, NearFarScalar } from "cesium";
+import { Color } from "cesium";
 import type { Event } from "@/types/event";
 import { severityToCesiumColor } from "@/components/globe/cesium/severity-colors";
 
-/** Matches `MAX_ZOOM_METERS` in `CesiumGlobeViewport` for distance scaling. */
-const GLOBE_MAX_ZOOM_METERS = 4.5e7;
-
 export const QUAKE_DOT_PIXEL_SIZE = 12;
-export const CLUSTER_DOT_PIXEL_SIZE = 14;
 export const QUAKE_DOT_OUTLINE = Color.WHITE.withAlpha(0.88);
 export const QUAKE_DOT_OUTLINE_WIDTH = 2;
-export const QUAKE_DOT_SCALE_BY_DISTANCE = new NearFarScalar(
-  3.0e5,
-  0.85,
-  GLOBE_MAX_ZOOM_METERS,
-  1.5,
-);
 
 const SELECTION_RING_OUTLINE_WIDTH = 2.5;
 
-/** Shared Cesium `PointPrimitive` styling for single quake markers. */
+/**
+ * Multiplier on {@link QUAKE_DOT_PIXEL_SIZE}. Grows to 1.5× at continental
+ * scale so sparse quakes stay visible, then eases back to 0.85× at full-globe
+ * zoom so dense coastlines do not swamp the map.
+ */
+export function dotPixelScaleForHeight(cameraHeightMeters: number, maxZoomMeters: number): number {
+  const close = 0.85;
+  const regional = 1.5;
+  const planet = 0.85;
+  const nearHeight = 3.0e5;
+  const regionalPeak = maxZoomMeters * 0.42;
+  const planetBlendStart = maxZoomMeters * 0.7;
+
+  if (cameraHeightMeters <= nearHeight) {
+    return close;
+  }
+  if (cameraHeightMeters < regionalPeak) {
+    const t = (cameraHeightMeters - nearHeight) / (regionalPeak - nearHeight);
+    return close + (regional - close) * t;
+  }
+  if (cameraHeightMeters < planetBlendStart) {
+    return regional;
+  }
+  if (cameraHeightMeters >= maxZoomMeters) {
+    return planet;
+  }
+  const t = (cameraHeightMeters - planetBlendStart) / (maxZoomMeters - planetBlendStart);
+  const smooth = t * t * (3 - 2 * t);
+  return regional + (planet - regional) * smooth;
+}
+
+/** Single quake markers — filled severity dot, no outline. */
 export function quakePointStyle(
   severity: Event["severity"],
+  scaleMultiplier: number = 1,
   pixelSize: number = QUAKE_DOT_PIXEL_SIZE,
 ) {
   return {
     color: severityToCesiumColor(severity),
-    pixelSize,
-    outlineColor: QUAKE_DOT_OUTLINE,
-    outlineWidth: QUAKE_DOT_OUTLINE_WIDTH,
-    scaleByDistance: QUAKE_DOT_SCALE_BY_DISTANCE,
+    pixelSize: pixelSize * scaleMultiplier,
+    outlineWidth: 0,
   };
 }
 
-/**
- * Three-dot triangle glyph (eye-space offsets) for merged clusters. Reads as
- * "multiple events here" without a numeric label and stays legible at any zoom.
- */
-export function clusterGlyphStyles(severity: Event["severity"]) {
-  const withOffset = (pixelSize: number, eyeOffset: Cartesian3) => ({
-    ...quakePointStyle(severity, pixelSize),
-    eyeOffset,
-  });
-
-  return [
-    withOffset(CLUSTER_DOT_PIXEL_SIZE, new Cartesian3(0, 5, 0)),
-    withOffset(QUAKE_DOT_PIXEL_SIZE - 1, new Cartesian3(-9, -6, 0)),
-    withOffset(QUAKE_DOT_PIXEL_SIZE - 1, new Cartesian3(9, -6, 0)),
-  ];
+/** Merged cluster marker — same fill, white ring distinguishes combined quakes. */
+export function clusterDotStyle(severity: Event["severity"], scaleMultiplier: number = 1) {
+  return {
+    color: severityToCesiumColor(severity),
+    pixelSize: QUAKE_DOT_PIXEL_SIZE * scaleMultiplier,
+    outlineColor: QUAKE_DOT_OUTLINE,
+    outlineWidth: QUAKE_DOT_OUTLINE_WIDTH,
+  };
 }
 
 /** White selection ring drawn around a quake dot or cluster marker. */
@@ -56,6 +69,5 @@ export function selectionRingStyle(pixelSize: number) {
     pixelSize,
     outlineColor: Color.WHITE,
     outlineWidth: SELECTION_RING_OUTLINE_WIDTH,
-    scaleByDistance: QUAKE_DOT_SCALE_BY_DISTANCE,
   };
 }
