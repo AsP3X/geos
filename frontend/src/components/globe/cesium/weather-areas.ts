@@ -89,7 +89,9 @@ function styleEntity(entity: Entity, event: Event, selected: boolean) {
       heightReference: HeightReference.NONE,
     });
   }
-  entity.id = event.id;
+  // Note: do not assign entity.id here. GeoJsonDataSource already sets it from
+  // the feature's top-level id (our event.id), and Entity.id is getter-only —
+  // assigning it throws and would abort the rebuild before the layer is added.
 }
 
 /** Rebuild the weather alert overlay from the current event set. */
