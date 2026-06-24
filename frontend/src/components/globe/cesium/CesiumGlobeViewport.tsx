@@ -21,6 +21,8 @@ import {
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import type { Event } from "@/types/event";
+import type { GlobeBBox } from "@/lib/events-api";
+import { bboxChanged, viewBoundsToBBox } from "@/components/globe/cesium/viewport";
 import { useAuth } from "@/hooks/useAuth";
 import { type GlobeLayers, isQuake } from "@/components/globe/layers";
 import {
@@ -91,6 +93,11 @@ interface CesiumGlobeViewportProps {
   globeLoading?: boolean;
   globeLoadingMore?: boolean;
   globeEpoch?: number;
+  /**
+   * Called on camera settle with the current view bounds (margin-expanded), or
+   * `null` for whole-globe/antimeridian views. Drives viewport-scoped loading.
+   */
+  onViewportChange?: (bbox: GlobeBBox | null) => void;
 }
 
 /**
@@ -111,6 +118,7 @@ export function CesiumGlobeViewport({
   globeLoading,
   globeLoadingMore,
   globeEpoch = 0,
+  onViewportChange,
 }: CesiumGlobeViewportProps) {
   const { getAccessToken } = useAuth();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -136,6 +144,11 @@ export function CesiumGlobeViewport({
   const prevQuakeCountRef = useRef(0);
   const lastApplyAtRef = useRef(0);
   const quakeEventsRef = useRef<Event[]>([]);
+  // Viewport-scoped loading: report the camera bounds on settle so the page can
+  // fetch only the visible quakes. `lastReportedBboxRef` suppresses tiny pans.
+  const onViewportChangeRef = useRef(onViewportChange);
+  onViewportChangeRef.current = onViewportChange;
+  const lastReportedBboxRef = useRef<GlobeBBox | null>(null);
 
   // Latest props captured in refs so the imperative Cesium callbacks (created
   // once on mount) always read current values without re-binding listeners.
@@ -247,6 +260,7 @@ export function CesiumGlobeViewport({
       // Refine border/coastline LOD for the new zoom; idempotent (skips already
       // loaded levels). Camera-driven so it no longer runs per streamed batch.
       void loadVectorOverlays();
+      maybeReportViewport();
     };
     viewer.camera.changed.addEventListener(scheduleClusterRebuild);
     viewer.camera.moveEnd.addEventListener(onCameraSettle);
@@ -489,6 +503,29 @@ export function CesiumGlobeViewport({
       position,
       ...selectionRingStyle((QUAKE_DOT_PIXEL_SIZE + 2) * dotScale + 8),
     });
+  }
+
+  // ── Viewport reporting: drive page-side viewport-scoped loading ─────────────
+  function maybeReportViewport() {
+    const cb = onViewportChangeRef.current;
+    const viewer = viewerRef.current;
+    if (!cb || !viewer || viewer.isDestroyed()) {
+      return;
+    }
+    const rect = viewer.camera.computeViewRectangle();
+    const bbox = rect
+      ? viewBoundsToBBox(
+          CesiumMath.toDegrees(rect.west),
+          CesiumMath.toDegrees(rect.south),
+          CesiumMath.toDegrees(rect.east),
+          CesiumMath.toDegrees(rect.north),
+        )
+      : null;
+    if (!bboxChanged(lastReportedBboxRef.current, bbox)) {
+      return;
+    }
+    lastReportedBboxRef.current = bbox;
+    cb(bbox);
   }
 
   // ── Vector overlays (borders + coastline), camera-height LOD ────────────────

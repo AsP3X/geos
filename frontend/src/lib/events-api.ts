@@ -106,11 +106,21 @@ function appendFilterParams(
   }
 }
 
+/** Geographic bounds (WGS84 degrees) for viewport-scoped globe queries. */
+export interface GlobeBBox {
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
+}
+
 export interface ListEventsParams {
   filters: EventFilters;
   availableSources?: string[];
   limit?: number;
   offset?: number;
+  /** Restrict results to a viewport bounding box (globe lazy-loading). */
+  bbox?: GlobeBBox | null;
 }
 
 export async function listEvents(
@@ -137,6 +147,12 @@ export async function listEventMapPoints(
   search.set("limit", String(params.limit ?? GLOBE_MAP_BATCH_SIZE));
   if (params.offset !== undefined) {
     search.set("offset", String(params.offset));
+  }
+  if (params.bbox) {
+    search.set("min_lon", String(params.bbox.minLon));
+    search.set("min_lat", String(params.bbox.minLat));
+    search.set("max_lon", String(params.bbox.maxLon));
+    search.set("max_lat", String(params.bbox.maxLat));
   }
   appendFilterParams(search, params.filters, params.availableSources ?? []);
   return apiGet<EventMapResponse>(`/api/v1/events/map?${search}`, accessToken);

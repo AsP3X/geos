@@ -21,6 +21,7 @@ import {
   GLOBE_MAP_BATCH_SIZE,
   GLOBE_MAP_MAX_POINTS,
   getEvent,
+  type GlobeBBox,
   listEvents,
   listEventMapPoints,
   listEventSources,
@@ -137,6 +138,11 @@ export function CommandCenterPage() {
   const [layers, setLayers] = useState<GlobeLayers>(DEFAULT_LAYERS);
   const [sources, setSources] = useState<string[]>([]);
   const queryGenerationRef = useRef(0);
+  // Globe loading runs on its own generation so viewport-driven refetches don't
+  // cancel the sidebar list query. `globeBboxRef` holds the latest camera bounds
+  // (null = whole-globe/global load).
+  const globeGenerationRef = useRef(0);
+  const globeBboxRef = useRef<GlobeBBox | null>(null);
 
   const enabled = Boolean(session);
   const { filters, setFilters } = useFilterState({ enabled, getAccessToken });
@@ -236,9 +242,12 @@ export function CommandCenterPage() {
     [],
   );
 
-  // Fetch matching quake coordinates in batches (recent first) for globe layers.
+  // Fetch matching quake coordinates in batches (recent first) for globe layers,
+  // scoped to the current viewport `bbox` when zoomed in (null = global load).
+  // The first batch replaces the previous set so dots from the prior view stay
+  // visible until new data arrives (no flicker); later batches append.
   const loadGlobeData = useCallback(
-    async (generation: number) => {
+    async (generation: number, bbox: GlobeBBox | null) => {
       if (committedQuery) {
         return;
       }
@@ -251,7 +260,7 @@ export function CommandCenterPage() {
         return;
       }
       const token = await getAccessToken();
-      if (!token || generation !== queryGenerationRef.current) {
+      if (!token || generation !== globeGenerationRef.current) {
         return;
       }
       setGlobeLoading(true);
@@ -261,32 +270,34 @@ export function CommandCenterPage() {
       let total = 0;
 
       try {
-        while (generation === queryGenerationRef.current && offset < GLOBE_MAP_MAX_POINTS) {
+        while (generation === globeGenerationRef.current && offset < GLOBE_MAP_MAX_POINTS) {
           const response = await listEventMapPoints(token, {
             filters: globeFilters,
             availableSources: sources,
             limit: GLOBE_MAP_BATCH_SIZE,
             offset,
+            bbox,
           });
-          if (generation !== queryGenerationRef.current) {
+          if (generation !== globeGenerationRef.current) {
             return;
           }
+
+          const batch = response.points.map(mapPointToEvent);
 
           if (offset === 0) {
             total = response.total;
             setGlobeTotal(total);
             setGlobeLoading(false);
-            if (total > GLOBE_MAP_BATCH_SIZE) {
-              setGlobeLoadingMore(true);
-            }
+            setGlobeLoadingMore(total > batch.length);
+            // Replace the previous view's points (viewport changed or new filter).
+            setGlobeEvents(batch);
+          } else {
+            setGlobeEvents((current) => appendGlobeBatch(current, batch));
           }
 
-          const batch = response.points.map(mapPointToEvent);
           if (batch.length === 0) {
             break;
           }
-
-          setGlobeEvents((current) => appendGlobeBatch(current, batch));
           offset += batch.length;
 
           const reachedTotal = offset >= total;
@@ -299,18 +310,32 @@ export function CommandCenterPage() {
           await pause(GLOBE_MAP_BATCH_PAUSE_MS);
         }
       } catch {
-        if (generation !== queryGenerationRef.current) {
+        if (generation !== globeGenerationRef.current) {
           return;
         }
         // Non-fatal: sidebar list still works; partial globe data may remain.
       } finally {
-        if (generation === queryGenerationRef.current) {
+        if (generation === globeGenerationRef.current) {
           setGlobeLoading(false);
           setGlobeLoadingMore(false);
         }
       }
     },
     [committedQuery, filters, getAccessToken, sources],
+  );
+
+  // Camera settled: (re)load the globe scoped to the new viewport bounds.
+  const handleViewportChange = useCallback(
+    (bbox: GlobeBBox | null) => {
+      if (committedQuery) {
+        return;
+      }
+      globeBboxRef.current = bbox;
+      const generation = ++globeGenerationRef.current;
+      setGlobeEpoch((epoch) => epoch + 1);
+      void loadGlobeData(generation, bbox);
+    },
+    [committedQuery, loadGlobeData],
   );
 
   // Load the first page for the current filter + committed search query.
@@ -357,7 +382,9 @@ export function CommandCenterPage() {
         setTotalEvents(response.total);
         setHasMore(response.offset + response.items.length < response.total);
         setSelectedId((current) => current ?? response.items[0]?.id ?? null);
-        void loadGlobeData(generation);
+        // New globe generation; keep the current viewport scope across filter changes.
+        const globeGeneration = ++globeGenerationRef.current;
+        void loadGlobeData(globeGeneration, globeBboxRef.current);
       }
     } catch (err) {
       if (generation !== queryGenerationRef.current) {
@@ -504,6 +531,7 @@ export function CommandCenterPage() {
             globeLoading={globeLoading}
             globeLoadingMore={globeLoadingMore}
             globeEpoch={globeEpoch}
+            onViewportChange={handleViewportChange}
           />
         </Suspense>
       </div>
